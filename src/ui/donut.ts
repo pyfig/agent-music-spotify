@@ -79,5 +79,9 @@ export function renderDonutFrame(A: number, B: number, w: number, h: number): st
     for (let x = 0; x < w; x++) line += chars[x + w * y];
     out.push(line.replace(/\s+$/, ""));
   }
-  return out;
+  // Срезаем общий leading-отступ: иначе блок включает пустое поле слева и
+  // центрирование родителем уводит бублик вправо от середины.
+  const indents = out.filter((l) => l.length > 0).map((l) => l.match(/^ */)![0].length);
+  const minIndent = indents.length > 0 ? Math.min(...indents) : 0;
+  return out.map((l) => l.slice(minIndent));
 }

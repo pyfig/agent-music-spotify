@@ -34,7 +34,9 @@ export function DonutAnimation({ width, height, label }: DonutAnimationProps) {
 
   return (
     // Fixed-size block; parent is responsible for centering it on screen.
-    <box style={{ flexDirection: "column", alignItems: "center" }}>
+    // Lines align left: leading spaces from renderDonutFrame already place the
+    // sphere at the canvas centre; centering trimmed lines would skew it.
+    <box style={{ flexDirection: "column", alignItems: "flex-start" }}>
       {frame.map((line, i) => (
         <text key={i} fg={theme.accent}>{line}</text>
       ))}
