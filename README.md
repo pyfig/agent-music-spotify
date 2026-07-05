@@ -2,6 +2,9 @@
 
 Terminal UI (Bun + [@opentui/react](https://github.com/anomalyco/opentui)) that turns a mood or request into a Spotify playlist: an AI agent picks the tracks, the real Spotify Web API resolves and plays them — all without leaving the terminal.
 
+<img width="1672" height="995" alt="image" src="https://github.com/user-attachments/assets/0ddc41c1-f8f6-410b-afac-344c92c0c778" />
+
+
 ## Install
 
 One-liner:
