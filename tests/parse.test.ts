@@ -10,6 +10,7 @@ describe("parsePlaylistResponse", () => {
     expect(parsePlaylistResponse(text)).toEqual({
       name: "Rainy Sunday",
       tracks: [{ artist: "Bon Iver", title: "Holocene" }],
+      artists: [],
     });
   });
 
@@ -18,7 +19,34 @@ describe("parsePlaylistResponse", () => {
       "```json\n" +
       JSON.stringify({ name: "X", tracks: [{ artist: "A", title: "B" }] }) +
       "\n```";
-    expect(parsePlaylistResponse(text)).toEqual({ name: "X", tracks: [{ artist: "A", title: "B" }] });
+    expect(parsePlaylistResponse(text)).toEqual({
+      name: "X",
+      tracks: [{ artist: "A", title: "B" }],
+      artists: [],
+    });
+  });
+
+  test("parses artists field", () => {
+    const text = JSON.stringify({
+      name: "X",
+      tracks: [{ artist: "A", title: "B" }],
+      artists: ["Nirvana", "Кино"],
+    });
+    expect(parsePlaylistResponse(text).artists).toEqual(["Nirvana", "Кино"]);
+  });
+
+  test("missing artists field defaults to empty array", () => {
+    const text = JSON.stringify({ name: "X", tracks: [{ artist: "A", title: "B" }] });
+    expect(parsePlaylistResponse(text).artists).toEqual([]);
+  });
+
+  test("drops non-string and empty artist entries", () => {
+    const text = JSON.stringify({
+      name: "X",
+      tracks: [{ artist: "A", title: "B" }],
+      artists: ["Nirvana", 5, null, "  ", " Muse "],
+    });
+    expect(parsePlaylistResponse(text).artists).toEqual(["Nirvana", "Muse"]);
   });
 
   test("throws on garbage input", () => {

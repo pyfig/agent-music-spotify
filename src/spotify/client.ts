@@ -165,6 +165,18 @@ export class SpotifyClient {
     return { id: item.id, name: item.name };
   }
 
+  async getArtistTopTracks(artistId: string, limit = 5): Promise<SpotifyTrack[]> {
+    const res = await this.request(`/artists/${artistId}/top-tracks?market=from_token`);
+    const data = (await res.json()) as any;
+    return ((data.tracks ?? []) as any[]).slice(0, limit).map((item) => ({
+      id: item.id,
+      uri: item.uri,
+      name: item.name,
+      artist: item.artists?.[0]?.name ?? "",
+      url: item.external_urls?.spotify ?? "",
+    }));
+  }
+
   async getCurrentUserId(): Promise<string> {
     const res = await this.request("/me");
     const data = (await res.json()) as any;
@@ -225,6 +237,15 @@ export class SpotifyClient {
       method: "PUT",
       body: JSON.stringify(isPlaylistOrAlbum ? { context_uri: uri } : { uris: [uri] }),
     });
+  }
+
+  async pause(): Promise<void> {
+    await this.request("/me/player/pause", { method: "PUT" });
+  }
+
+  async resume(): Promise<void> {
+    // PUT /me/player/play without a body resumes the current context in place.
+    await this.request("/me/player/play", { method: "PUT" });
   }
 
   async getCurrentlyPlaying(): Promise<{ uri: string | null; isPlaying: boolean } | null> {

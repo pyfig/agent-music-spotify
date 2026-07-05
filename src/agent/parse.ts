@@ -6,6 +6,7 @@ export interface TrackRec {
 export interface PlaylistRec {
   name: string;
   tracks: TrackRec[];
+  artists: string[];
 }
 
 export interface ClarifyQuestion {
@@ -47,7 +48,13 @@ export function parsePlaylistResponse(text: string): PlaylistRec {
   if (tracks.length === 0) {
     throw new Error("no valid tracks in response");
   }
-  return { name: json.name, tracks };
+  const artists: string[] = Array.isArray(json.artists)
+    ? json.artists
+        .filter((a: unknown): a is string => typeof a === "string")
+        .map((a: string) => a.trim())
+        .filter((a: string) => a.length > 0)
+    : [];
+  return { name: json.name, tracks, artists };
 }
 
 export function parseClarifyResponse(text: string): ClarifyRec {

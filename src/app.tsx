@@ -607,7 +607,22 @@ export function App() {
     try {
       const token = await getAccessToken(config);
       const spotify = new SpotifyClient(token);
+      // Re-check live state (the 1.5s poll can be stale): pressing enter on the
+      // track that's already playing pauses it instead of restarting it.
+      const state = await spotify.getCurrentlyPlaying();
+      if (state?.uri === target) {
+        if (state.isPlaying) {
+          await spotify.pause();
+          setIsPlaying(false);
+        } else {
+          await spotify.resume();
+          setIsPlaying(true);
+        }
+        return;
+      }
       await spotify.play(target);
+      setCurrentlyPlayingUri(target);
+      setIsPlaying(true);
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     }

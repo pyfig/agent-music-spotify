@@ -101,12 +101,31 @@ export async function resolvePlaylist(
       unresolved.push(track);
     }
   }
-  if (resolved.length === 0) {
+  // Guarantee: artists explicitly named in the prompt always land in the
+  // playlist — force-merge their top tracks regardless of what the LLM picked.
+  const artistTracks: SpotifyTrack[] = [];
+  for (const name of rec.artists) {
+    signal?.throwIfAborted();
+    try {
+      const artist = await spotify.searchArtist(name);
+      if (!artist) continue;
+      artistTracks.push(...(await spotify.getArtistTopTracks(artist.id, 5)));
+    } catch (e) {
+      console.error("[resolve] artist top-tracks failed", name, e instanceof Error ? e.message : e);
+    }
+  }
+  const byUri = new Map<string, SpotifyTrack>();
+  for (const track of [...artistTracks, ...resolved]) {
+    if (!byUri.has(track.uri)) byUri.set(track.uri, track);
+  }
+  const merged = [...byUri.values()];
+
+  if (merged.length === 0) {
     throw new Error("no tracks resolved on Spotify (check logs for searchTrack errors)");
   }
 
   onProgress?.({ phase: "done" });
-  return { name: rec.name, description: `Generated for: ${prompt}`, resolved, unresolved };
+  return { name: rec.name, description: `Generated for: ${prompt}`, resolved: merged, unresolved };
 }
 
 export async function commitPlaylist(
