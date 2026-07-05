@@ -1,19 +1,53 @@
-# vibedeck
+# amusic
 
-Terminal UI (Bun + [@opentui/react](https://github.com/anomalyco/opentui)) that turns a mood/request into Spotify album picks, or a set of seed artists into a generated mix playlist — using an AI agent to make the picks and the real Spotify Web API to resolve and play them.
+Terminal UI (Bun + [@opentui/react](https://github.com/anomalyco/opentui)) that turns a mood or request into a Spotify playlist: an AI agent picks the tracks, the real Spotify Web API resolves and plays them — all without leaving the terminal.
 
 ## Install
 
+One-liner:
+
 ```bash
-./install.sh
-vibedeck
+curl -fsSL https://raw.githubusercontent.com/pyfig/agent-music-spotify/main/install.sh | bash
+amusic
 ```
 
-The installer ensures Bun is present, installs dependencies, and links a `vibedeck` command into `~/.local/bin`.
+Or from a checkout:
+
+```bash
+git clone https://github.com/pyfig/agent-music-spotify.git && cd agent-music-spotify
+./install.sh
+amusic
+```
+
+The installer ensures Bun is present, installs dependencies, and links an `amusic` command into `~/.local/bin` (the curl variant keeps the repo in `~/.local/share/amusic`).
+
+## Spotify setup
 
 Spotify connects automatically on first run: a built-in client ID + PKCE flow opens your browser for consent — nothing to type. Tokens are cached and auto-refreshed at `~/.config/spotify-harness-tui/tokens.json`.
 
-To use your own Spotify app instead, set `SPOTIFY_CLIENT_ID` or put `spotifyClientId` in `~/.config/spotify-harness-tui/config.json` (redirect URI must be `http://127.0.0.1:8888/callback`; no client secret needed).
+The built-in client ID is shared and its API quota can run out (you'll see a `429` error). Use your own Spotify app instead — run `/clientid` inside the TUI, it walks you through creating the app and saves the ID. Manual alternatives: set `SPOTIFY_CLIENT_ID` or put `spotifyClientId` in `~/.config/spotify-harness-tui/config.json` (redirect URI must be `http://127.0.0.1:8888/callback`; no client secret needed).
+
+## Usage
+
+1. Type a mood or theme (`late night driving synthwave`), **Enter**.
+2. Answer the clarifying questions (or pick an option).
+3. Get the track list, then choose in **what next?**:
+   - **Add** — create the playlist on Spotify;
+   - **Just listen** — keep the list, play tracks with **Enter**, no playlist created (save later with `/save`);
+   - **Continue generation** — regenerate;
+   - **Cancel** — discard.
+
+### Keys & commands
+
+- `/` opens the command dropdown — arrows navigate, **Tab** completes, **Enter** runs:
+  - `/model` — switch AI provider/model
+  - `/random` — let the model pick a genre
+  - `/save` — save the current track list as a playlist
+  - `/clientid` — set your own Spotify app client ID
+  - `/login` — reconnect Spotify
+  - `/quit` — exit
+- Arrows — move selection in results; **Enter** on empty input — play the selected track (needs an open Spotify app on any device).
+- **Ctrl+P** — cycle agent provider. **Esc Esc** — cancel generation. **Ctrl+C** — quit.
 
 ## Config
 
@@ -38,15 +72,6 @@ Optional overrides — env vars (`SPOTIFY_CLIENT_ID`, `DEFAULT_PROVIDER`, `OLLAM
 bun install
 bun run dev
 ```
-
-## Usage
-
-- The prompt starts centered; after your first request it moves to the top with results below.
-- Type `/` to open the command dropdown: `/model` (switch provider/model), `/login` (reconnect Spotify), `/quit`. Arrows navigate, **Tab** completes, **Enter** runs.
-- **Ctrl+P** — cycle agent provider.
-- Type your mood, **Enter** to submit.
-- Arrows — move selection in results; **Enter** on empty input — play selection.
-- **Ctrl+C** — quit.
 
 ## Scopes requested
 
