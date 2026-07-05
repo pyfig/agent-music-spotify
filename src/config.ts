@@ -19,7 +19,8 @@ const CONFIG_FILE = join(CONFIG_DIR, "config.json");
  * Built-in Spotify app client ID (PKCE flow, no secret) so users never enter
  * credentials by hand. Replace the placeholder with the real app's client ID.
  */
-export const DEFAULT_CLIENT_ID = "f82763f1dfd848bebf0d53e31adf0f7d";
+export const DEFAULT_CLIENT_ID =
+  "change this id on https://developer.spotify.com/dashboard";
 
 export function isValidClientId(id: string | undefined): id is string {
   return typeof id === "string" && /^[0-9a-f]{32}$/i.test(id);
@@ -44,7 +45,8 @@ async function readFileConfig(): Promise<FileConfig> {
 
 export async function loadConfig(): Promise<Config> {
   const fileConfig = await readFileConfig();
-  const chosenProvider = process.env.DEFAULT_PROVIDER ?? fileConfig.defaultProvider;
+  const chosenProvider =
+    process.env.DEFAULT_PROVIDER ?? fileConfig.defaultProvider;
   return {
     configDir: CONFIG_DIR,
     spotifyClientId: isValidClientId(process.env.SPOTIFY_CLIENT_ID)
@@ -53,7 +55,10 @@ export async function loadConfig(): Promise<Config> {
         ? fileConfig.spotifyClientId
         : DEFAULT_CLIENT_ID,
     defaultProvider: chosenProvider ?? "claude-cli",
-    ollamaUrl: process.env.OLLAMA_URL ?? fileConfig.ollamaUrl ?? "http://127.0.0.1:11434",
+    ollamaUrl:
+      process.env.OLLAMA_URL ??
+      fileConfig.ollamaUrl ??
+      "http://127.0.0.1:11434",
     ollamaModel: process.env.OLLAMA_MODEL ?? fileConfig.ollamaModel ?? "llama3",
     claudeModel: process.env.CLAUDE_MODEL ?? fileConfig.claudeModel ?? "sonnet",
     providerChosen: chosenProvider !== undefined,
