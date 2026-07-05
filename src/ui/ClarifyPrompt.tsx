@@ -45,19 +45,21 @@ export function ClarifyPrompt({
 
   const selectOptions = [
     ...options.map((o) => ({ name: o, description: "", value: o })),
-    { name: "Custom…", description: "type your own answer", value: CUSTOM_VALUE },
+    { name: "Custom… (type your own answer)", description: "", value: CUSTOM_VALUE },
   ];
 
+  // Height hugs content: question (1) + one line per option + border (2).
   return (
     <box
       title={`clarify ${stepLabel}`}
-      style={{ border: true, borderColor: theme.accent, height: selectOptions.length * 2 + 3, flexDirection: "column" }}
+      style={{ border: true, borderColor: theme.accent, height: selectOptions.length + 3, flexShrink: 0, flexDirection: "column" }}
     >
       <text fg={theme.fg}>{questionText}</text>
       <select
         focused={focused}
         options={selectOptions}
         selectedIndex={0}
+        showDescription={false}
         onSelect={(_, option) => {
           const value = option?.value as string | undefined;
           if (!value) return;
@@ -67,7 +69,13 @@ export function ClarifyPrompt({
           }
           onPickOption(value);
         }}
-        style={{ flexGrow: 1, ...selectTheme }}
+        style={{
+          flexGrow: 1,
+          ...selectTheme,
+          // Unselected options dimmed so the active row reads instantly.
+          textColor: theme.subtext,
+          focusedTextColor: theme.subtext,
+        }}
       />
     </box>
   );
