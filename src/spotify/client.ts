@@ -1,3 +1,5 @@
+import type { MusicProvider, ProviderCapabilities, Track } from "../music/types";
+
 const API_BASE = "https://api.spotify.com/v1";
 
 function normalizeName(s: string): string {
@@ -23,14 +25,6 @@ export interface SpotifyAlbum {
   url: string;
 }
 
-export interface SpotifyTrack {
-  id: string;
-  uri: string;
-  name: string;
-  artist: string;
-  url: string;
-}
-
 export interface SpotifyPlaylist {
   id: string;
   uri: string;
@@ -44,7 +38,25 @@ export interface SpotifyDevice {
   isActive: boolean;
 }
 
-export class SpotifyClient {
+function toTrack(item: any, fallbackArtist = ""): Track {
+  return {
+    uri: item.uri,
+    title: item.name,
+    artist: item.artists?.[0]?.name ?? fallbackArtist,
+    album: item.album?.name,
+    durationMs: item.duration_ms,
+    artwork: item.album?.images?.[0]?.url,
+  };
+}
+
+export class SpotifyClient implements MusicProvider {
+  readonly name = "spotify" as const;
+  readonly capabilities: ProviderCapabilities = {
+    remotePlaylists: true,
+    remotePlayback: true,
+    localPlayback: false,
+  };
+
   constructor(private accessToken: string) {}
 
   // Shared across concurrent requests: when one request gets a 429, all
@@ -120,7 +132,7 @@ export class SpotifyClient {
     };
   }
 
-  async searchTrack(artist: string, title: string): Promise<SpotifyTrack | null> {
+  async searchTrack(artist: string, title: string): Promise<Track | null> {
     const strict = await this.searchTrackQuery(`track:${title} artist:${artist}`);
     let item = pickByArtist(strict, artist);
     if (!item) {
@@ -134,13 +146,7 @@ export class SpotifyClient {
       item = byTitle[0];
     }
     if (!item) return null;
-    return {
-      id: item.id,
-      uri: item.uri,
-      name: item.name,
-      artist: item.artists?.[0]?.name ?? artist,
-      url: item.external_urls?.spotify ?? "",
-    };
+    return toTrack(item, artist);
   }
 
   private async searchTrackQuery(query: string): Promise<any[]> {
@@ -165,16 +171,10 @@ export class SpotifyClient {
     return { id: item.id, name: item.name };
   }
 
-  async getArtistTopTracks(artistId: string, limit = 5): Promise<SpotifyTrack[]> {
+  async getArtistTopTracks(artistId: string, limit = 5): Promise<Track[]> {
     const res = await this.request(`/artists/${artistId}/top-tracks?market=from_token`);
     const data = (await res.json()) as any;
-    return ((data.tracks ?? []) as any[]).slice(0, limit).map((item) => ({
-      id: item.id,
-      uri: item.uri,
-      name: item.name,
-      artist: item.artists?.[0]?.name ?? "",
-      url: item.external_urls?.spotify ?? "",
-    }));
+    return ((data.tracks ?? []) as any[]).slice(0, limit).map((item) => toTrack(item));
   }
 
   async getCurrentUserId(): Promise<string> {

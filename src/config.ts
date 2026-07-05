@@ -1,13 +1,25 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { MusicBackend } from "./music/types";
+
+const MUSIC_BACKENDS: MusicBackend[] = ["spotify", "soundcloud", "youtube-music"];
+
+function asMusicBackend(value: string | undefined): MusicBackend | undefined {
+  return MUSIC_BACKENDS.includes(value as MusicBackend) ? (value as MusicBackend) : undefined;
+}
 
 export interface Config {
   configDir: string;
+  musicBackend: MusicBackend;
   spotifyClientId: string;
+  /** api-v2 client_id — from env, or scraped from soundcloud.com and cached. */
+  soundcloudClientId: string;
   defaultProvider: string;
   ollamaUrl: string;
   ollamaModel: string;
   claudeModel: string;
+  claudeEffort: string;
+  customSystemPrompt: string;
   /** True when provider was explicitly chosen (env or config file), not just defaulted. */
   providerChosen: boolean;
 }
@@ -27,11 +39,15 @@ export function isValidClientId(id: string | undefined): id is string {
 }
 
 export interface FileConfig {
+  musicBackend?: string;
   spotifyClientId?: string;
+  soundcloudClientId?: string;
   defaultProvider?: string;
   ollamaUrl?: string;
   ollamaModel?: string;
   claudeModel?: string;
+  claudeEffort?: string;
+  customSystemPrompt?: string;
 }
 
 async function readFileConfig(): Promise<FileConfig> {
@@ -49,11 +65,17 @@ export async function loadConfig(): Promise<Config> {
     process.env.DEFAULT_PROVIDER ?? fileConfig.defaultProvider;
   return {
     configDir: CONFIG_DIR,
+    musicBackend:
+      asMusicBackend(process.env.MUSIC_BACKEND) ??
+      asMusicBackend(fileConfig.musicBackend) ??
+      "spotify",
     spotifyClientId: isValidClientId(process.env.SPOTIFY_CLIENT_ID)
       ? process.env.SPOTIFY_CLIENT_ID
       : isValidClientId(fileConfig.spotifyClientId)
         ? fileConfig.spotifyClientId
         : DEFAULT_CLIENT_ID,
+    soundcloudClientId:
+      process.env.SOUNDCLOUD_CLIENT_ID ?? fileConfig.soundcloudClientId ?? "",
     defaultProvider: chosenProvider ?? "claude-cli",
     ollamaUrl:
       process.env.OLLAMA_URL ??
@@ -61,6 +83,9 @@ export async function loadConfig(): Promise<Config> {
       "http://127.0.0.1:11434",
     ollamaModel: process.env.OLLAMA_MODEL ?? fileConfig.ollamaModel ?? "llama3",
     claudeModel: process.env.CLAUDE_MODEL ?? fileConfig.claudeModel ?? "sonnet",
+    claudeEffort: process.env.CLAUDE_EFFORT ?? fileConfig.claudeEffort ?? "low",
+    customSystemPrompt:
+      process.env.CLAUDE_SYSTEM_PROMPT ?? fileConfig.customSystemPrompt ?? "",
     providerChosen: chosenProvider !== undefined,
   };
 }

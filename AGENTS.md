@@ -109,3 +109,11 @@ bun --hot ./index.ts
 ```
 
 For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.
+
+## Project environment variables
+
+- `MUSIC_BACKEND` — `spotify` (default) | `soundcloud` | `youtube-music`.
+- `SPOTIFY_CLIENT_ID` — Spotify app client ID (32 hex chars), only needed for the spotify backend.
+- `SOUNDCLOUD_CLIENT_ID` — api-v2 client_id; optional — auto-scraped from soundcloud.com and cached in config when unset.
+- `YTMUSIC_COOKIE` — reserved for future YouTube Music library access; not required (search and playback are anonymous).
+- Local backends (soundcloud, youtube-music) play through `mpv` (JSON IPC); youtube-music also needs `yt-dlp`. Both are external binaries checked at startup, not npm packages.
