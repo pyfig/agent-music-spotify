@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parsePlaylistResponse } from "../src/agent/parse";
+import { parsePlaylistResponse, parseClarifyResponse } from "../src/agent/parse";
 
 describe("parsePlaylistResponse", () => {
   test("parses valid JSON", () => {
@@ -40,5 +40,50 @@ describe("parsePlaylistResponse", () => {
       tracks: [{ artist: "A", title: "B" }, { artist: 5 }, "junk"],
     });
     expect(parsePlaylistResponse(text).tracks).toEqual([{ artist: "A", title: "B" }]);
+  });
+});
+
+describe("parseClarifyResponse", () => {
+  test("parses zero questions (no clarification needed)", () => {
+    expect(parseClarifyResponse(JSON.stringify({ questions: [] }))).toEqual({ questions: [] });
+  });
+
+  test("parses questions with 3 options", () => {
+    const text = JSON.stringify({
+      questions: [{ text: "Which era?", options: ["80s", "90s", "2000s"] }],
+    });
+    expect(parseClarifyResponse(text)).toEqual({
+      questions: [{ text: "Which era?", options: ["80s", "90s", "2000s"] }],
+    });
+  });
+
+  test("truncates more than 3 questions", () => {
+    const text = JSON.stringify({
+      questions: [
+        { text: "Q1", options: ["a", "b", "c"] },
+        { text: "Q2", options: ["a", "b", "c"] },
+        { text: "Q3", options: ["a", "b", "c"] },
+        { text: "Q4", options: ["a", "b", "c"] },
+      ],
+    });
+    expect(parseClarifyResponse(text).questions.length).toBe(3);
+  });
+
+  test("truncates more than 3 options per question", () => {
+    const text = JSON.stringify({
+      questions: [{ text: "Q", options: ["a", "b", "c", "d", "e"] }],
+    });
+    expect(parseClarifyResponse(text).questions[0]?.options).toEqual(["a", "b", "c"]);
+  });
+
+  test("drops malformed question entries", () => {
+    const text = JSON.stringify({
+      questions: [{ text: "Q", options: ["a", "b"] }, { text: 5, options: [] }, "junk"],
+    });
+    expect(parseClarifyResponse(text).questions).toEqual([{ text: "Q", options: ["a", "b"] }]);
+  });
+
+  test("throws when 'questions' field missing", () => {
+    expect(() => parseClarifyResponse(JSON.stringify({}))).toThrow();
   });
 });

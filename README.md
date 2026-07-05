@@ -1,55 +1,52 @@
-# spotify-harness-tui
+# vibedeck
 
 Terminal UI (Bun + [@opentui/react](https://github.com/anomalyco/opentui)) that turns a mood/request into Spotify album picks, or a set of seed artists into a generated mix playlist — using an AI agent to make the picks and the real Spotify Web API to resolve and play them.
 
-## Setup
+## Install
 
-### 1. Spotify app
+```bash
+./install.sh
+vibedeck
+```
 
-1. Create an app at https://developer.spotify.com/dashboard.
-2. Add redirect URI: `http://127.0.0.1:8888/callback`.
-3. Copy the client ID.
+The installer ensures Bun is present, installs dependencies, and links a `vibedeck` command into `~/.local/bin`.
 
-No client secret needed — auth uses PKCE.
+Spotify connects automatically on first run: a built-in client ID + PKCE flow opens your browser for consent — nothing to type. Tokens are cached and auto-refreshed at `~/.config/spotify-harness-tui/tokens.json`.
 
-### 2. Config
+To use your own Spotify app instead, set `SPOTIFY_CLIENT_ID` or put `spotifyClientId` in `~/.config/spotify-harness-tui/config.json` (redirect URI must be `http://127.0.0.1:8888/callback`; no client secret needed).
 
-Set env vars, or write `~/.config/spotify-harness-tui/config.json`:
+## Config
+
+Optional overrides — env vars (`SPOTIFY_CLIENT_ID`, `DEFAULT_PROVIDER`, `OLLAMA_URL`, `OLLAMA_MODEL`) or `~/.config/spotify-harness-tui/config.json`:
 
 ```json
 {
-  "spotifyClientId": "your-client-id",
   "defaultProvider": "claude-cli",
   "ollamaUrl": "http://127.0.0.1:11434",
   "ollamaModel": "llama3"
 }
 ```
 
-Env vars (override config file): `SPOTIFY_CLIENT_ID`, `DEFAULT_PROVIDER`, `OLLAMA_URL`, `OLLAMA_MODEL`.
-
-### 3. Agent provider
+### Agent provider
 
 - **claude-cli**: requires the `claude` CLI installed and authenticated on your machine.
 - **ollama**: requires a running Ollama daemon (`ollama serve`) with a pulled model.
 
-## Install & run
+## Run from source
 
 ```bash
 bun install
 bun run dev
 ```
 
-First action that needs Spotify opens your browser for consent; tokens are cached and auto-refreshed at `~/.config/spotify-harness-tui/tokens.json`.
-
 ## Usage
 
-- **Tab** — switch mode: mood → album picks, or artist mix.
+- The prompt starts centered; after your first request it moves to the top with results below.
+- Type `/` to open the command dropdown: `/model` (switch provider/model), `/login` (reconnect Spotify), `/quit`. Arrows navigate, **Tab** completes, **Enter** runs.
 - **Ctrl+P** — cycle agent provider.
-- Type your mood (mode 1) or `seed artist, another artist | optional mood` (mode 2), **Enter** to submit.
-- **j/k** or arrows — move selection in results.
-- **Enter** on a result — play it on your active Spotify device.
-- **s** (mood mode) — save the selected album to your library.
-- **q** / **Ctrl+C** — quit.
+- Type your mood, **Enter** to submit.
+- Arrows — move selection in results; **Enter** on empty input — play selection.
+- **Ctrl+C** — quit.
 
 ## Scopes requested
 
@@ -63,4 +60,4 @@ bun test
 
 ## Not yet implemented
 
-codex CLI / OpenRouter agent providers (interface is ready — add to `src/agent/registry.ts`), album art rendering, live playback progress, playlist editing after creation.
+codex CLI / OpenRouter agent providers, album art rendering, live playback progress, playlist editing after creation.

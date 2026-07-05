@@ -1,6 +1,9 @@
 {
-  "name": "spotify-harness-tui",
+  "name": "vibedeck",
   "module": "src/index.tsx",
+  "bin": {
+    "vibedeck": "src/index.tsx"
+  },
   "type": "module",
   "private": true,
   "scripts": {

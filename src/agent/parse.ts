@@ -8,7 +8,16 @@ export interface PlaylistRec {
   tracks: TrackRec[];
 }
 
-function extractJson(text: string): string {
+export interface ClarifyQuestion {
+  text: string;
+  options: string[];
+}
+
+export interface ClarifyRec {
+  questions: ClarifyQuestion[];
+}
+
+export function extractJson(text: string): string {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1]! : text;
   const start = candidate.indexOf("{");
@@ -39,6 +48,25 @@ export function parsePlaylistResponse(text: string): PlaylistRec {
     throw new Error("no valid tracks in response");
   }
   return { name: json.name, tracks };
+}
+
+export function parseClarifyResponse(text: string): ClarifyRec {
+  const json = JSON.parse(extractJson(text));
+  if (!json || !Array.isArray(json.questions)) {
+    throw new Error("response missing 'questions' array");
+  }
+  const questions: ClarifyQuestion[] = json.questions
+    .filter((q: unknown): q is { text: unknown; options: unknown } => {
+      const rec = q as Record<string, unknown>;
+      return typeof rec === "object" && rec !== null && typeof rec.text === "string" && Array.isArray(rec.options);
+    })
+    .slice(0, 3)
+    .map((q: { text: string; options: unknown[] }) => ({
+      text: q.text,
+      options: q.options.filter((o): o is string => typeof o === "string").slice(0, 3),
+    }))
+    .filter((q: ClarifyQuestion) => q.options.length > 0);
+  return { questions };
 }
 
 export async function withRetry<T>(

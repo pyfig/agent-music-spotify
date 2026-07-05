@@ -1,57 +1,36 @@
 import { useState } from "react";
+import { useKeyboard } from "@opentui/react";
 import { ModelPicker, type ModelChoice } from "./ModelPicker";
+import { theme } from "./theme";
 
-export interface SetupResult {
-  provider: string;
-  ollamaModel?: string;
-  spotifyClientId: string;
-}
+export type SetupResult = ModelChoice;
 
 interface SetupWizardProps {
   ollamaModels: string[];
-  initialClientId: string;
   onDone: (result: SetupResult) => void;
 }
 
-export function SetupWizard({ ollamaModels, initialClientId, onDone }: SetupWizardProps) {
-  const [choice, setChoice] = useState<ModelChoice | null>(null);
-  const [clientId, setClientId] = useState(initialClientId);
+export function SetupWizard({ ollamaModels, onDone }: SetupWizardProps) {
+  const [claudeFamilyOpen, setClaudeFamilyOpen] = useState(false);
 
-  if (!choice) {
-    return (
-      <box style={{ flexDirection: "column" }}>
-        <text fg="cyan">First-time setup — step 1/2</text>
-        <text fg="gray">Pick the AI model that generates your playlists.</text>
-        <ModelPicker ollamaModels={ollamaModels} focused onPick={setChoice} />
-        {ollamaModels.length === 0 && (
-          <text fg="gray">(ollama daemon not reachable — only claude-cli listed)</text>
-        )}
-      </box>
-    );
-  }
+  useKeyboard((key) => {
+    if (claudeFamilyOpen && key.name === "escape") setClaudeFamilyOpen(false);
+  });
 
   return (
     <box style={{ flexDirection: "column" }}>
-      <text fg="cyan">First-time setup — step 2/2</text>
-      <text fg="gray">
-        Spotify client ID (create app at developer.spotify.com, redirect URI
-        http://127.0.0.1:8888/callback)
-      </text>
-      <box title="Spotify client ID" style={{ border: true, height: 3 }}>
-        <input
-          focused
-          value={clientId}
-          placeholder="32-char hex client id"
-          onInput={setClientId}
-          onSubmit={
-            ((value: string) => {
-              if (value.trim().length > 0) {
-                onDone({ ...choice, spotifyClientId: value.trim() });
-              }
-            }) as unknown as (event: unknown) => void
-          }
-        />
-      </box>
+      <text fg={theme.accent}>First-time setup</text>
+      <text fg={theme.muted}>Pick the AI model that generates your playlists. Spotify connection will be requested on the next step.</text>
+      <ModelPicker
+        ollamaModels={ollamaModels}
+        focused
+        onPick={onDone}
+        claudeFamilyOpen={claudeFamilyOpen}
+        onOpenClaudeFamily={() => setClaudeFamilyOpen(true)}
+      />
+      {ollamaModels.length === 0 && (
+        <text fg={theme.muted}>(ollama daemon not reachable — only claude-cli listed)</text>
+      )}
     </box>
   );
 }
