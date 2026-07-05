@@ -20,6 +20,7 @@ import {
   forceFreshLogin,
   getAccessToken,
   isAuthenticated,
+  openBrowser,
 } from "./spotify/auth";
 import { SpotifyClient, type SpotifyPlaylist } from "./spotify/client";
 import {
@@ -237,10 +238,7 @@ export function App() {
         setClientIdError(undefined);
       }
       if (key.ctrl && key.name === "o") {
-        Bun.spawn(["open", "https://developer.spotify.com/dashboard"], {
-          stdout: "ignore",
-          stderr: "ignore",
-        });
+        void openBrowser("https://developer.spotify.com/dashboard");
       }
       return;
     }
@@ -322,10 +320,11 @@ export function App() {
   ): Promise<void> {
     const cfg = cfgOverride ?? config;
     if (!cfg || connectingRef.current) return;
-    if (cfg.spotifyClientId.includes("PLACEHOLDER")) {
-      setError(
-        "built-in client ID not set — edit DEFAULT_CLIENT_ID in src/config.ts",
-      );
+    if (!isValidClientId(cfg.spotifyClientId)) {
+      setPendingPrompt(resumePrompt);
+      setClientIdText("");
+      setClientIdError(undefined);
+      setClientIdOpen(true);
       return;
     }
     connectingRef.current = true;
@@ -369,7 +368,9 @@ export function App() {
     setClientIdOpen(false);
     setClientIdText("");
     setClientIdError(undefined);
-    await runLoginAndResume(null, next);
+    const resume = pendingPrompt;
+    setPendingPrompt(null);
+    await runLoginAndResume(resume, next);
   }
 
   async function applyModelChoice(choice: ModelChoice) {

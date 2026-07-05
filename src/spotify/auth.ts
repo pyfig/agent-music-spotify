@@ -1,4 +1,5 @@
 import { randomBytes, createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Config } from "../config";
 import { tokensPath } from "../config";
@@ -328,10 +329,44 @@ async function runLoginFlow(config: Config): Promise<Tokens> {
   return exchangeCode(config, code, verifier);
 }
 
-async function openBrowser(url: string): Promise<void> {
+function isWSL(): boolean {
+  if (process.platform !== "linux") return false;
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+  try {
+    return readFileSync("/proc/version", "utf8").toLowerCase().includes("microsoft");
+  } catch {
+    return false;
+  }
+}
+
+export async function openBrowser(url: string): Promise<void> {
+  // Spotify OAuth URL contains `&`-joined query params, which cmd.exe treats
+  // as a command separator unless the URL is quoted. The obvious fix —
+  // `cmd.exe /c start "" "<url>"` with `"<url>"` as a single argv element —
+  // is broken on WSL: the interop layer re-quotes any argv element that
+  // contains a `"` (not just spaces), escaping the inner quotes as `\"`.
+  // cmd.exe then strips the outer quotes and un-escapes to `\https://…\`,
+  // which surfaces as "Windows cannot find '\https://accounts.spotify.com/'".
+  // `explorer.exe <url>` is equally unreliable: with `?`/`&` in the URL it
+  // treats the argument as a relative path and prepends the CWD, yielding
+  // the same stray-backslash error. Going through `powershell.exe` avoids
+  // both: the URL is single-quoted inside the -Command argument (PowerShell
+  // treats `&`/`?` literally inside single quotes), interop wraps the
+  // space-containing -Command element in double quotes without mangling
+  // anything, and Start-Process hands the URL to the OS default browser.
   const cmd =
-    process.platform === "darwin" ? ["open", url] : process.platform === "win32" ? ["cmd", "/c", "start", url] : ["xdg-open", url];
-  Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore" });
+    process.platform === "darwin"
+      ? ["open", url]
+      : process.platform === "win32"
+        ? ["powershell", "-NoProfile", "-Command", `Start-Process '${url}'`]
+        : isWSL()
+          ? ["powershell.exe", "-NoProfile", "-Command", `Start-Process '${url}'`]
+          : ["xdg-open", url];
+  try {
+    Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore" });
+  } catch {
+    console.log(`Open this URL in your browser to continue:\n${url}`);
+  }
 }
 
 export async function getAccessToken(config: Config): Promise<string> {
