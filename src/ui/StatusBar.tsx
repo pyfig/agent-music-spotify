@@ -3,6 +3,7 @@ import { theme } from "./theme";
 
 interface StatusBarProps {
   model: string;
+  backend: string;
   authed: boolean;
   loading: boolean;
   error?: string;
@@ -15,7 +16,7 @@ interface StatusBarProps {
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const BAR_WIDTH = 12;
+const BAR_WIDTH = 10;
 
 function progressBar(current: number, total: number): string {
   const filled = total > 0 ? Math.round((current / total) * BAR_WIDTH) : 0;
@@ -25,13 +26,13 @@ function progressBar(current: number, total: number): string {
 function progressLabel(progress: Progress, tokenCount: number): string {
   switch (progress.phase) {
     case "clarifying":
-      return "checking if clarification is needed…";
+      return "clarifying…";
     case "thinking":
-      return `thinking ${tokenCount > 0 ? `n=${tokenCount} tokens` : "…"}`;
+      return `thinking ${tokenCount > 0 ? `n=${tokenCount}` : "…"}`;
     case "resolving": {
       const current = progress.current ?? 0;
       const total = progress.total ?? 0;
-      return `resolving tracks [${progressBar(current, total)}] ${current}/${total}`;
+      return `resolving [${progressBar(current, total)}] ${current}/${total}`;
     }
     case "creating":
       return "creating playlist";
@@ -44,6 +45,7 @@ function progressLabel(progress: Progress, tokenCount: number): string {
 
 export function StatusBar({
   model,
+  backend,
   authed,
   loading,
   error,
@@ -54,6 +56,7 @@ export function StatusBar({
   cancelHint = false,
   excludedCount = 0,
 }: StatusBarProps) {
+  const backendLabel = `♪ ${backend} ${authed ? "✓" : "—"}`;
   return (
     <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
       {error ? (
@@ -62,19 +65,19 @@ export function StatusBar({
         <>
           <text fg={theme.subtext}>
             {" "}
-            {model} · spotify {authed ? "✓" : "—"} ·{" "}
+            {model} ·{" "}
           </text>
           <text fg={theme.accent}>
             {SPINNER[spinnerFrame % SPINNER.length]} {progressLabel(progress, tokenCount)} ·{" "}
             {elapsed}s
           </text>
-          {cancelHint && <text fg={theme.yellow}> · esc again to cancel</text>}
+          {cancelHint && <text fg={theme.yellow}> · esc cancels</text>}
         </>
       ) : (
         <>
           <text fg={theme.subtext}>
             {" "}
-            {model} · spotify {authed ? "✓" : "—"}
+            {model} · {backendLabel}
             {loading ? " · generating…" : " · /model · ⏎ play · q quit"}
           </text>
           {!!excludedCount && !loading && !error ? (

@@ -2,14 +2,20 @@ import type { AgentProvider } from "../types";
 
 export interface ClaudeCliConfig {
   model?: string;
+  effort?: string;
+  systemPrompt?: string;
 }
 
 export class ClaudeCliProvider implements AgentProvider {
   name = "claude-cli";
   private model: string;
+  private effort?: string;
+  private customSystemPrompt?: string;
 
   constructor(config: ClaudeCliConfig = {}) {
     this.model = config.model ?? "sonnet";
+    this.effort = config.effort;
+    this.customSystemPrompt = config.systemPrompt;
   }
 
   async generate(
@@ -18,22 +24,26 @@ export class ClaudeCliProvider implements AgentProvider {
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
   ): Promise<string> {
-    const proc = Bun.spawn(
-      [
-        "claude",
-        "-p",
-        user,
-        "--model",
-        this.model,
-        "--effort",
-        "low",
-        "--append-system-prompt",
-        system,
-        "--output-format",
-        "json",
-      ],
-      { stdout: "pipe", stderr: "pipe" },
+    const args = [
+      "claude",
+      "-p",
+      user,
+      "--model",
+      this.model,
+    ];
+    if (this.effort && this.effort !== "none") {
+      args.push("--effort", this.effort);
+    }
+    const appendedSystem = this.customSystemPrompt
+      ? `${system}\n\n${this.customSystemPrompt}`
+      : system;
+    args.push(
+      "--append-system-prompt",
+      appendedSystem,
+      "--output-format",
+      "json",
     );
+    const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
     signal?.addEventListener("abort", () => proc.kill(), { once: true });
     // Read stdout in chunks so onToken gets a signal even if the CLI buffers.
     const readStdout = async () => {

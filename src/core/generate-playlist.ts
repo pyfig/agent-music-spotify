@@ -7,12 +7,12 @@ import {
 } from "../agent/prompts";
 import { parsePlaylistResponse, parseClarifyResponse, withRetry, type TrackRec, type ClarifyRec } from "../agent/parse";
 import type { AgentProvider } from "../agent/types";
-import type { SpotifyClient, SpotifyPlaylist, SpotifyTrack } from "../spotify/client";
+import type { MusicProvider, RemotePlaylist, Track } from "../music/types";
 
 export interface ResolvedPlaylist {
   name: string;
   description: string;
-  resolved: SpotifyTrack[];
+  resolved: Track[];
   unresolved: TrackRec[];
 }
 
@@ -20,6 +20,29 @@ export interface Progress {
   phase: "clarifying" | "thinking" | "resolving" | "creating" | "adding" | "done";
   current?: number;
   total?: number;
+}
+
+/** Per-track search budget. A hung backend request (e.g. ytmusic-api with no
+ * timeout of its own) would otherwise stall the whole worker pool forever —
+ * progress freezes one short of total. The timeout message is deliberately
+ * non-network so the classifier below marks the track unresolved instead of
+ * failing the entire playlist. */
+const SEARCH_TIMEOUT_MS = 15_000;
+
+export function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} search timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
 }
 
 export async function clarify(
@@ -35,18 +58,23 @@ export async function clarify(
 
 export async function resolvePlaylist(
   provider: AgentProvider,
-  spotify: SpotifyClient,
+  music: MusicProvider,
   prompt: string,
   qa: ClarifyAnswer[],
   onProgress?: (progress: Progress) => void,
   onToken?: (delta: string) => void,
   signal?: AbortSignal,
+  /** Optional taste-memory block appended to the system prompt. */
+  tasteContext?: string,
 ): Promise<ResolvedPlaylist> {
   onProgress?.({ phase: "thinking" });
+  const system = tasteContext
+    ? `${GENERATE_PLAYLIST_SYSTEM}\n\n${tasteContext}`
+    : GENERATE_PLAYLIST_SYSTEM;
   const rec = await withRetry(
     () =>
       provider.generate(
-        GENERATE_PLAYLIST_SYSTEM,
+        system,
         generatePlaylistUserWithAnswers(prompt, qa),
         onToken,
         signal,
@@ -54,12 +82,12 @@ export async function resolvePlaylist(
     parsePlaylistResponse,
   );
 
-  const resolved: SpotifyTrack[] = [];
+  const resolved: Track[] = [];
   const unresolved: TrackRec[] = [];
   const total = rec.tracks.length;
   onProgress?.({ phase: "resolving", current: 0, total });
   const CONCURRENCY = 5;
-  const results: (SpotifyTrack | null)[] = new Array(total).fill(null);
+  const results: (Track | null)[] = new Array(total).fill(null);
   let nextIndex = 0;
   let completed = 0;
   let failed = false;
@@ -72,7 +100,11 @@ export async function resolvePlaylist(
       if (i >= total) return;
       const track = rec.tracks[i]!;
       try {
-        results[i] = await spotify.searchTrack(track.artist, track.title).catch((e) => {
+        results[i] = await withTimeout(
+          music.searchTrack(track.artist, track.title),
+          SEARCH_TIMEOUT_MS,
+          "track",
+        ).catch((e) => {
           const msg = e instanceof Error ? e.message : String(e);
           // Auth and transient failures look like "unresolved" — surface them
           // instead of masking them as a genuine not-on-Spotify result.
@@ -103,25 +135,25 @@ export async function resolvePlaylist(
   }
   // Guarantee: artists explicitly named in the prompt always land in the
   // playlist — force-merge their top tracks regardless of what the LLM picked.
-  const artistTracks: SpotifyTrack[] = [];
+  const artistTracks: Track[] = [];
   for (const name of rec.artists) {
     signal?.throwIfAborted();
     try {
-      const artist = await spotify.searchArtist(name);
+      const artist = await music.searchArtist(name);
       if (!artist) continue;
-      artistTracks.push(...(await spotify.getArtistTopTracks(artist.id, 5)));
+      artistTracks.push(...(await music.getArtistTopTracks(artist.id, 5)));
     } catch (e) {
       console.error("[resolve] artist top-tracks failed", name, e instanceof Error ? e.message : e);
     }
   }
-  const byUri = new Map<string, SpotifyTrack>();
+  const byUri = new Map<string, Track>();
   for (const track of [...artistTracks, ...resolved]) {
     if (!byUri.has(track.uri)) byUri.set(track.uri, track);
   }
   const merged = [...byUri.values()];
 
   if (merged.length === 0) {
-    throw new Error("no tracks resolved on Spotify (check logs for searchTrack errors)");
+    throw new Error(`no tracks resolved on ${music.name} (check logs for searchTrack errors)`);
   }
 
   onProgress?.({ phase: "done" });
@@ -129,16 +161,19 @@ export async function resolvePlaylist(
 }
 
 export async function commitPlaylist(
-  spotify: SpotifyClient,
+  music: MusicProvider,
   name: string,
   description: string,
-  resolved: SpotifyTrack[],
+  resolved: Track[],
   onProgress?: (progress: Progress) => void,
-): Promise<SpotifyPlaylist> {
+): Promise<RemotePlaylist> {
+  if (!music.capabilities.remotePlaylists || !music.createPlaylist || !music.addTracksToPlaylist) {
+    throw new Error(`${music.name} cannot create remote playlists — use local playback queue instead`);
+  }
   onProgress?.({ phase: "creating" });
-  const playlist = await spotify.createPlaylist(name, description);
+  const playlist = await music.createPlaylist(name, description);
   onProgress?.({ phase: "adding" });
-  await spotify.addTracksToPlaylist(
+  await music.addTracksToPlaylist(
     playlist.id,
     resolved.map((t) => t.uri),
   );

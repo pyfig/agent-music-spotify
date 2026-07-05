@@ -16,4 +16,4 @@ const result = await resolvePlaylist(
 const playlist = await commitPlaylist(spotify, result.name, result.description, result.resolved);
 console.log("playlist:", playlist.name, playlist.url);
 console.log("resolved:", result.resolved.length, "unresolved:", result.unresolved.length);
-console.log(result.resolved.slice(0, 5).map((t) => `${t.artist} — ${t.name}`).join("\n"));
+console.log(result.resolved.slice(0, 5).map((t) => `${t.artist} — ${t.title}`).join("\n"));

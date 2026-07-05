@@ -48,13 +48,34 @@ The built-in client ID is shared and its API quota can run out (you'll see a `42
   - `/save` — save the current track list as a playlist
   - `/clientid` — set your own Spotify app client ID
   - `/login` — reconnect Spotify
+  - `/like [comment]` — remember the current track in taste memory
+  - `/memory` — show saved taste memory
+  - `/forget` — clear taste memory
   - `/quit` — exit
-- Arrows — move selection in results; **Enter** on empty input — play the selected track (needs an open Spotify app on any device).
-- **Ctrl+P** — cycle agent provider. **Esc Esc** — cancel generation. **Ctrl+C** — quit.
+- Arrows — move selection in results; **Enter** on empty input — play the selected track (Spotify backend needs an open Spotify app on any device; other backends play locally via mpv).
+- **Ctrl+P** — cycle agent provider. **Ctrl+B** — switch music backend. **Esc Esc** — cancel generation. **Ctrl+C** — quit.
+
+## Multiple backends
+
+Switch with **Ctrl+B** or `MUSIC_BACKEND` env / `musicBackend` config key.
+
+| | Spotify | SoundCloud | YouTube Music |
+|---|---|---|---|
+| Track search | ✓ | ✓ | ✓ |
+| Artist top tracks | ✓ | ✓ | ✓ |
+| Remote playlists | ✓ | — | — |
+| Playback | Spotify Connect (remote) | local via mpv | local via mpv |
+| Requirements | Spotify app client ID + OAuth | `mpv` (client_id auto-scraped, or `SOUNDCLOUD_CLIENT_ID`) | `mpv` + `yt-dlp` |
+
+Backends without remote playlists queue the resolved track list into the local mpv player instead ("Add" plays the whole list; **Enter** plays from the selected track).
+
+## Taste memory
+
+Generated sessions and `/like`d tracks accumulate in `.commandcode/taste/taste.md` and bias future playlists. Raw sessions are capped at 10 — older ones get summarized into a compact `Preferences` block automatically.
 
 ## Config
 
-Optional overrides — env vars (`SPOTIFY_CLIENT_ID`, `DEFAULT_PROVIDER`, `OLLAMA_URL`, `OLLAMA_MODEL`) or `~/.config/spotify-harness-tui/config.json`:
+Optional overrides — env vars (`MUSIC_BACKEND`, `SPOTIFY_CLIENT_ID`, `SOUNDCLOUD_CLIENT_ID`, `DEFAULT_PROVIDER`, `OLLAMA_URL`, `OLLAMA_MODEL`) or `~/.config/spotify-harness-tui/config.json`:
 
 ```json
 {

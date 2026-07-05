@@ -22,7 +22,22 @@ import {
   isAuthenticated,
   openBrowser,
 } from "./spotify/auth";
-import { SpotifyClient, type SpotifyPlaylist } from "./spotify/client";
+import { SpotifyClient } from "./spotify/client";
+import { createMusicProvider } from "./music/factory";
+import { checkLocalPlaybackDeps, player } from "./music/playback";
+import {
+  addLine,
+  appendSession,
+  emptyTaste,
+  loadTaste,
+  needsRotation,
+  rotate,
+  ROTATE_SYSTEM,
+  saveTaste,
+  tastePromptPrefix,
+} from "./core/taste";
+import type { MusicBackend, RemotePlaylist } from "./music/types";
+import { MusicBackendPicker } from "./ui/MusicBackendPicker";
 import {
   clarify,
   resolvePlaylist,
@@ -35,27 +50,34 @@ import { ResultsList, type ResultLine } from "./ui/ResultsList";
 import { StatusBar } from "./ui/StatusBar";
 import { SetupWizard } from "./ui/SetupWizard";
 import { ModelPicker, type ModelChoice } from "./ui/ModelPicker";
+import { EffortPicker } from "./ui/EffortPicker";
 import { SlashMenu, filterSlashCommands } from "./ui/SlashMenu";
 import { ConnectPrompt } from "./ui/ConnectPrompt";
 import { ClarifyPrompt } from "./ui/ClarifyPrompt";
 import { ClientIdPrompt } from "./ui/ClientIdPrompt";
+import { SystemPromptPrompt } from "./ui/SystemPromptPrompt";
 import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
+import { Logo } from "./ui/Logo";
 import { theme } from "./ui/theme";
 
 type Screen = "loading" | "wizard" | "main";
 
 export function App() {
-  const { width } = useTerminalDimensions();
+  const { width, height } = useTerminalDimensions();
   const [config, setConfig] = useState<Config | null>(null);
   const [screen, setScreen] = useState<Screen>("loading");
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [backendPickerOpen, setBackendPickerOpen] = useState(false);
+  const [effortPickerOpen, setEffortPickerOpen] = useState(false);
   const [clientIdOpen, setClientIdOpen] = useState(false);
   const [clientIdText, setClientIdText] = useState("");
   const [clientIdError, setClientIdError] = useState<string | undefined>(
     undefined,
   );
   const [claudeFamilyOpen, setClaudeFamilyOpen] = useState(false);
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false);
+  const [systemPromptText, setSystemPromptText] = useState("");
   const [input, setInput] = useState("");
   const [authed, setAuthed] = useState(false);
   const authedRef = useRef(false);
@@ -65,7 +87,7 @@ export function App() {
   const [resolved, setResolved] = useState<ResolvedPlaylist | null>(null);
   const [awaitingConfirm, setAwaitingConfirm] = useState(false);
   const [committedPlaylist, setCommittedPlaylist] =
-    useState<SpotifyPlaylist | null>(null);
+    useState<RemotePlaylist | null>(null);
   const [clarifyQuestions, setClarifyQuestions] = useState<
     ClarifyQuestion[] | null
   >(null);
@@ -93,6 +115,10 @@ export function App() {
     null,
   );
   const [isPlaying, setIsPlaying] = useState(false);
+  const [memoryText, setMemoryText] = useState<string | null>(null);
+  const [forgetOpen, setForgetOpen] = useState(false);
+  // Taste sessions group by generation; /like lands in the latest one.
+  const sessionHeaderRef = useRef<string>(new Date().toISOString().slice(0, 16));
 
   function disarmEsc() {
     if (escTimerRef.current) clearTimeout(escTimerRef.current);
@@ -116,24 +142,41 @@ export function App() {
       const a = await isAuthenticated(c);
       authedRef.current = a;
       setAuthed(a);
-      if (!a) setConfirmConnect(true);
+      // Spotify auth only matters for the spotify backend; local backends
+      // need external binaries instead.
+      if (c.musicBackend === "spotify") {
+        if (!a) setConfirmConnect(true);
+      } else {
+        const depError = checkLocalPlaybackDeps(c.musicBackend);
+        if (depError) setError(depError);
+      }
       setOllamaModels(await listOllamaModels(c.ollamaUrl));
       setScreen(isConfigured(c) ? "main" : "wizard");
     });
   }, []);
 
-  // Poll /me/player for current playback state (which track is playing / paused).
+  // Poll current playback state (which track is playing / paused):
+  // spotify — its Web API /me/player; local backends — the mpv-backed player.
   useEffect(() => {
-    if (!authed || loading || !config) return;
+    if (loading || !config) return;
+    const isSpotify = config.musicBackend === "spotify";
+    if (isSpotify && !authed) return;
     let cancelled = false;
     const poll = async () => {
       try {
-        const token = await getAccessToken(config);
-        const spotify = new SpotifyClient(token);
-        const state = await spotify.getCurrentlyPlaying();
-        if (cancelled) return;
-        setCurrentlyPlayingUri(state?.uri ?? null);
-        setIsPlaying(state?.isPlaying ?? false);
+        if (isSpotify) {
+          const token = await getAccessToken(config);
+          const spotify = new SpotifyClient(token);
+          const state = await spotify.getCurrentlyPlaying();
+          if (cancelled) return;
+          setCurrentlyPlayingUri(state?.uri ?? null);
+          setIsPlaying(state?.isPlaying ?? false);
+        } else {
+          const state = await player.getCurrentlyPlaying();
+          if (cancelled) return;
+          setCurrentlyPlayingUri(state?.track?.uri ?? null);
+          setIsPlaying(state?.isPlaying ?? false);
+        }
       } catch {
         // ignore polling errors
       }
@@ -155,27 +198,36 @@ export function App() {
   const slashMenuOpen =
     screen === "main" &&
     !pickerOpen &&
+    !backendPickerOpen &&
     !clientIdOpen &&
+    !effortPickerOpen &&
+    !systemPromptOpen &&
     slashCommands.length > 0;
+
+  const isSpotifyBackend = config?.musicBackend !== "soundcloud" && config?.musicBackend !== "youtube-music";
 
   const provider: AgentProvider | null = useMemo(() => {
     if (!config) return null;
     return config.defaultProvider === "ollama"
       ? new OllamaProvider({ url: config.ollamaUrl, model: config.ollamaModel })
-      : new ClaudeCliProvider({ model: config.claudeModel });
+      : new ClaudeCliProvider({
+          model: config.claudeModel,
+          effort: config.claudeEffort,
+          systemPrompt: config.customSystemPrompt,
+        });
   }, [config]);
 
   const modelLabel = config
     ? config.defaultProvider === "ollama"
       ? `ollama:${config.ollamaModel}`
-      : `claude:${config.claudeModel} · effort:low`
+      : `claude:${config.claudeModel} · effort:${config.claudeEffort}`
     : "";
 
   const lines: ResultLine[] = useMemo(() => {
     if (!resolved) return [];
     return resolved.resolved.map((t, i) => ({
       key: `r${i}`,
-      label: `${t.artist} — ${t.name}`,
+      label: `${t.artist} — ${t.title}`,
       uri: t.uri,
       resolved: true,
     }));
@@ -216,6 +268,25 @@ export function App() {
       }
       return;
     }
+    if (forgetOpen) {
+      if (key.name === "r") {
+        const taste = await loadTaste();
+        await saveTaste({ ...taste, sessions: [] });
+        setForgetOpen(false);
+        return;
+      }
+      if (key.name === "a") {
+        await saveTaste(emptyTaste());
+        setForgetOpen(false);
+        return;
+      }
+      if (key.name === "escape" || key.name === "n") setForgetOpen(false);
+      return;
+    }
+    if (memoryText !== null) {
+      if (key.name === "escape") setMemoryText(null);
+      return;
+    }
     if (clarifyQuestions !== null) {
       if (clarifyCustomMode) {
         if (key.name === "escape") {
@@ -240,6 +311,21 @@ export function App() {
       if (key.ctrl && key.name === "o") {
         void openBrowser("https://developer.spotify.com/dashboard");
       }
+      return;
+    }
+    if (effortPickerOpen) {
+      if (key.name === "escape") setEffortPickerOpen(false);
+      return;
+    }
+    if (systemPromptOpen) {
+      if (key.name === "escape") {
+        setSystemPromptOpen(false);
+        setSystemPromptText("");
+      }
+      return;
+    }
+    if (backendPickerOpen) {
+      if (key.name === "escape") setBackendPickerOpen(false);
       return;
     }
     if (pickerOpen) {
@@ -290,6 +376,10 @@ export function App() {
         return;
       }
       setError(undefined);
+      return;
+    }
+    if (key.ctrl && key.name === "b") {
+      setBackendPickerOpen(true);
       return;
     }
     if (key.ctrl && key.name === "p") {
@@ -384,6 +474,36 @@ export function App() {
     setPickerOpen(false);
   }
 
+  async function applyBackendChoice(backend: MusicBackend) {
+    // A locally playing track belongs to the old backend — stop before switching.
+    await player.stop();
+    setCurrentlyPlayingUri(null);
+    setIsPlaying(false);
+    // Resolved tracks carry old-backend URIs (spotify:… / ytm:…) — they can't
+    // be played or committed on the new backend, so drop the list and any
+    // pending "what next?" confirm along with it.
+    setAwaitingConfirm(false);
+    setResolved(null);
+    setCommittedPlaylist(null);
+    setSelectedIndex(0);
+    const next = await saveConfig({ musicBackend: backend });
+    setConfig(next);
+    setBackendPickerOpen(false);
+    setError(checkLocalPlaybackDeps(backend) ?? undefined);
+  }
+
+  async function applyEffortChoice(effort: string) {
+    const next = await saveConfig({ claudeEffort: effort });
+    setConfig(next);
+    setEffortPickerOpen(false);
+  }
+
+  async function applySystemPrompt(value: string) {
+    const next = await saveConfig({ customSystemPrompt: value });
+    setConfig(next);
+    setSystemPromptOpen(false);
+  }
+
   async function runResolve(prompt: string, qa: ClarifyAnswer[]) {
     if (!config || !provider) return;
     setError(undefined);
@@ -395,12 +515,12 @@ export function App() {
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const token = await getAccessToken(config);
-      setAuthed(true);
-      const spotify = new SpotifyClient(token);
+      const music = await createMusicProvider(config);
+      if (config.musicBackend === "spotify") setAuthed(true);
+      const taste = await loadTaste();
       const r = await resolvePlaylist(
         provider,
-        spotify,
+        music,
         prompt,
         qa,
         (p) => {
@@ -410,11 +530,13 @@ export function App() {
         },
         (delta) => setTokenCount((n) => n + delta.length),
         controller.signal,
+        tastePromptPrefix(taste) || undefined,
       );
       setResolved(r);
       setCommittedPlaylist(null);
       setAwaitingConfirm(true);
       setSelectedIndex(0);
+      void recordTasteSession(r);
     } catch (e) {
       // User-initiated cancel is not an error.
       if (!(
@@ -429,6 +551,29 @@ export function App() {
       setLoading(false);
       setProgress(null);
       setStartTime(null);
+    }
+  }
+
+  // Best-effort taste memory: only sessions where ≥50% of tracks resolved.
+  async function recordTasteSession(r: ResolvedPlaylist) {
+    const total = r.resolved.length + r.unresolved.length;
+    if (total === 0 || r.resolved.length / total < 0.5) return;
+    try {
+      const header = new Date().toISOString().slice(0, 16);
+      sessionHeaderRef.current = header;
+      let taste = await loadTaste();
+      taste = appendSession(taste, {
+        header,
+        lines: r.resolved.map((t) => `- ${t.artist} – ${t.title}`),
+      });
+      if (needsRotation(taste) && provider) {
+        taste = await rotate(taste, (raw) => provider.generate(ROTATE_SYSTEM, raw)).catch(
+          () => taste,
+        );
+      }
+      await saveTaste(taste);
+    } catch {
+      // never block generation on memory failures
     }
   }
 
@@ -475,11 +620,16 @@ export function App() {
     if (!config || !resolved) return;
     setError(undefined);
     try {
-      const token = await getAccessToken(config);
+      const music = await createMusicProvider(config);
+      if (!music.capabilities.remotePlaylists) {
+        // No playlists on the service side — the local queue is the playlist.
+        await player.queue(resolved.resolved, music);
+        setAwaitingConfirm(false);
+        return;
+      }
       setAuthed(true);
-      const spotify = new SpotifyClient(token);
       const playlist = await commitPlaylist(
-        spotify,
+        music,
         resolved.name,
         resolved.description,
         resolved.resolved,
@@ -508,6 +658,11 @@ export function App() {
       setPickerOpen(true);
       return;
     }
+    if (trimmed === "/music") {
+      setInput("");
+      setBackendPickerOpen(true);
+      return;
+    }
     if (trimmed === "/login") {
       setInput("");
       await runLoginAndResume(null);
@@ -518,6 +673,21 @@ export function App() {
       setClientIdText("");
       setClientIdError(undefined);
       setClientIdOpen(true);
+      return;
+    }
+    if (trimmed === "/effort") {
+      setInput("");
+      if (config?.defaultProvider === "ollama") {
+        setError("effort only applies to the Claude provider");
+        return;
+      }
+      setEffortPickerOpen(true);
+      return;
+    }
+    if (trimmed === "/systemprompt") {
+      setInput("");
+      setSystemPromptText(config?.customSystemPrompt ?? "");
+      setSystemPromptOpen(true);
       return;
     }
     if (trimmed === "/save") {
@@ -533,11 +703,50 @@ export function App() {
       await savePlaylist();
       return;
     }
+    if (trimmed === "/like" || trimmed.startsWith("/like ")) {
+      setInput("");
+      const comment = trimmed.slice("/like".length).trim();
+      const track =
+        resolved?.resolved.find((t) => t.uri === currentlyPlayingUri) ??
+        resolved?.resolved[selectedIndex];
+      if (!track) {
+        setError("nothing to like — no current track");
+        return;
+      }
+      const line = comment
+        ? `- ${track.artist} – ${track.title} (liked: "${comment}")`
+        : `- ${track.artist} – ${track.title} (liked)`;
+      const taste = await loadTaste();
+      await saveTaste(addLine(taste, sessionHeaderRef.current, line));
+      return;
+    }
+    if (trimmed === "/memory") {
+      setInput("");
+      const taste = await loadTaste();
+      if (taste.preferences.length === 0 && taste.sessions.length === 0) {
+        setMemoryText("taste memory is empty — /like tracks or generate playlists");
+        return;
+      }
+      const last = taste.sessions.at(-1);
+      setMemoryText(
+        [
+          "Preferences:",
+          ...(taste.preferences.length ? taste.preferences : ["- (none yet)"]),
+          ...(last ? ["", `Last session (${last.header}):`, ...last.lines] : []),
+        ].join("\n"),
+      );
+      return;
+    }
+    if (trimmed === "/forget") {
+      setInput("");
+      setForgetOpen(true);
+      return;
+    }
     if (trimmed === "/quit") process.exit(0);
     if (trimmed === "/random") {
       setInput("");
       if (!config || !provider || loading) return;
-      if (!authedRef.current) {
+      if (isSpotifyBackend && !authedRef.current) {
         setPendingPrompt("__random__");
         setConfirmConnect(true);
         return;
@@ -551,7 +760,7 @@ export function App() {
       return;
     }
     if (!config || !provider || loading) return;
-    if (!authedRef.current) {
+    if (isSpotifyBackend && !authedRef.current) {
       setPendingPrompt(trimmed);
       setConfirmConnect(true);
       return;
@@ -559,6 +768,8 @@ export function App() {
     setHasInteracted(true);
     setError(undefined);
     setInput("");
+    setElapsed(0);
+    setStartTime(Date.now());
     setLoading(true);
     setProgress({ phase: "clarifying" });
     const controller = new AbortController();
@@ -595,6 +806,32 @@ export function App() {
 
   async function handlePlay() {
     if (!config) return;
+    // Local backends: play through mpv, queueing the rest of the list so
+    // playback continues past the selected track.
+    if (!isSpotifyBackend) {
+      const track = resolved?.resolved[selectedIndex];
+      if (!track) return;
+      try {
+        const state = await player.getCurrentlyPlaying();
+        if (state?.track?.uri === track.uri) {
+          if (state.isPlaying) {
+            await player.pause();
+            setIsPlaying(false);
+          } else {
+            await player.resume();
+            setIsPlaying(true);
+          }
+          return;
+        }
+        const music = await createMusicProvider(config);
+        await player.queue(resolved!.resolved.slice(selectedIndex), music);
+        setCurrentlyPlayingUri(track.uri);
+        setIsPlaying(true);
+      } catch (e) {
+        setError(String(e instanceof Error ? e.message : e));
+      }
+      return;
+    }
     if (!authedRef.current) {
       setConfirmConnect(true);
       return;
@@ -635,15 +872,33 @@ export function App() {
     : undefined;
 
   const columnWidth = Math.min(72, Math.max(40, width - 4));
+  // Short terminals can't fit logo + input + slash menu + status bar at once.
+  // Shrink the slash menu and drop the logo so the layout never overflows.
+  const slashMaxVisible = height >= 20 ? 3 : height >= 15 ? 2 : 1;
   // Input starts vertically centered; after the first search/album request the
   // layout shifts to the usual top-aligned position with results below.
   const centered =
-    screen === "main" && !hasInteracted && !pickerOpen && !clientIdOpen;
+    screen === "main" &&
+    !hasInteracted &&
+    !pickerOpen &&
+    !backendPickerOpen &&
+    !clientIdOpen &&
+    !effortPickerOpen &&
+    !systemPromptOpen;
   // Clarify Q&A gets the same centered treatment as the initial prompt.
   const clarifyActive =
-    screen === "main" && !pickerOpen && clarifyQuestions !== null;
-  // Logo only before the first prompt; frees vertical space afterwards.
-  const showLogo = screen !== "main" || !hasInteracted;
+    screen === "main" &&
+    !pickerOpen &&
+    !backendPickerOpen &&
+    !effortPickerOpen &&
+    !systemPromptOpen &&
+    clarifyQuestions !== null;
+
+  const playingTrack = resolved?.resolved.find((t) => t.uri === currentlyPlayingUri);
+  const nowPlaying = playingTrack ? `${playingTrack.artist} – ${playingTrack.title}` : null;
+  // Logo only before the first prompt; frees vertical space afterwards. Also
+  // hidden on very short terminals so the input and menu stay on screen.
+  const showLogo = (screen !== "main" || !hasInteracted) && height >= 12;
 
   const inputCluster = (
     <>
@@ -655,12 +910,43 @@ export function App() {
           setSlashIndex(0);
         }}
         onSubmit={handleSubmit}
-        focused={!confirmConnect && !awaitingConfirm && !clientIdOpen}
+        focused={
+          !confirmConnect &&
+          !awaitingConfirm &&
+          !clientIdOpen &&
+          !effortPickerOpen &&
+          !systemPromptOpen
+        }
       />
       {slashMenuOpen && (
-        <SlashMenu commands={slashCommands} selectedIndex={slashIndex} />
+        <SlashMenu
+          commands={slashCommands}
+          selectedIndex={slashIndex}
+          maxVisible={slashMaxVisible}
+          width={columnWidth}
+        />
       )}
       {confirmConnect && <ConnectPrompt pendingPrompt={pendingPrompt} />}
+      {memoryText !== null && (
+        <box
+          title="taste memory (esc to close)"
+          style={{ border: true, borderColor: theme.muted, flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}
+        >
+          {memoryText.split("\n").map((line, i) => (
+            <text key={`m${i}`} fg={line.endsWith(":") ? theme.accent : theme.fg}>
+              {line}
+            </text>
+          ))}
+        </box>
+      )}
+      {forgetOpen && (
+        <box
+          title="forget taste memory"
+          style={{ border: true, borderColor: theme.maroon, flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}
+        >
+          <text fg={theme.fg}>r — clear raw sessions only · a — clear everything · esc — cancel</text>
+        </box>
+      )}
     </>
   );
 
@@ -677,11 +963,7 @@ export function App() {
       >
         {showLogo && (
           <box style={{ alignItems: "center" }}>
-            <ascii-font
-              text="music-agent"
-              font="tiny"
-              style={{ color: theme.accent }}
-            />
+            <Logo />
           </box>
         )}
 
@@ -693,10 +975,13 @@ export function App() {
             onDone={async (r) => {
               const next = await saveConfig({
                 defaultProvider: r.provider,
+                musicBackend: r.musicBackend,
+                ...(r.soundcloudClientId ? { soundcloudClientId: r.soundcloudClientId } : {}),
                 ...(r.ollamaModel ? { ollamaModel: r.ollamaModel } : {}),
                 ...(r.claudeModel ? { claudeModel: r.claudeModel } : {}),
               });
               setConfig(next);
+              if (r.musicBackend === "spotify" && !authedRef.current) setConfirmConnect(true);
               setScreen("main");
             }}
           />
@@ -710,6 +995,31 @@ export function App() {
             current={currentChoice}
             claudeFamilyOpen={claudeFamilyOpen}
             onOpenClaudeFamily={() => setClaudeFamilyOpen(true)}
+          />
+        )}
+
+        {screen === "main" && backendPickerOpen && config && (
+          <MusicBackendPicker
+            focused
+            current={config.musicBackend}
+            onPick={applyBackendChoice}
+          />
+        )}
+
+        {screen === "main" && effortPickerOpen && config && (
+          <EffortPicker
+            focused
+            current={config.claudeEffort}
+            onPick={applyEffortChoice}
+          />
+        )}
+
+        {screen === "main" && systemPromptOpen && config && (
+          <SystemPromptPrompt
+            value={systemPromptText}
+            onChange={setSystemPromptText}
+            onSubmit={applySystemPrompt}
+            focused
           />
         )}
 
@@ -747,7 +1057,10 @@ export function App() {
 
         {screen === "main" &&
           !pickerOpen &&
+          !backendPickerOpen &&
           !clientIdOpen &&
+          !effortPickerOpen &&
+          !systemPromptOpen &&
           clarifyQuestions === null && (
             <>
               {centered && inputCluster}
@@ -771,9 +1084,18 @@ export function App() {
                   {inputCluster}
                 </>
               )}
+              {nowPlaying && !loading && !connecting ? (
+                <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
+                  <text fg={theme.accent}>
+                    {" "}
+                    {isPlaying ? "▶" : "⏸"} {nowPlaying}
+                  </text>
+                </box>
+              ) : null}
               <StatusBar
                 model={modelLabel}
-                authed={authed}
+                backend={config?.musicBackend ?? "spotify"}
+                authed={isSpotifyBackend ? authed : true}
                 loading={loading || connecting}
                 error={error}
                 progress={progress}

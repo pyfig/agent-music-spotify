@@ -14,6 +14,9 @@ export const theme = {
   green: "#a6e3a1", // success / "yes" / currently playing
   maroon: "#eba0ac", // excluded count etc.
 
+  // Logo gradient — spotify green → mint, per-character colors for <ascii-font>.
+  logoGradient: ["#1DB954", "#3DC468", "#5CCE7D", "#7CD991", "#A6E3A1"],
+
   // Surfaces
   surface1: "#313244", // selected row bg (ResultsList)
 } as const;
