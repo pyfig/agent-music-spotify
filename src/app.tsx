@@ -7,9 +7,12 @@ import {
   loadConfig,
   saveConfig,
   type Config,
+  type FileConfig,
 } from "./config";
 import { ClaudeCliProvider } from "./agent/providers/claude-cli";
 import { OllamaProvider, listOllamaModels } from "./agent/providers/ollama";
+import { OpencodeProvider } from "./agent/providers/opencode";
+import { OpenAIProvider } from "./agent/providers/openai";
 import type { AgentProvider } from "./agent/types";
 import type { ClarifyQuestion } from "./agent/parse";
 import {
@@ -49,13 +52,14 @@ import { PromptInput } from "./ui/PromptInput";
 import { ResultsList, type ResultLine } from "./ui/ResultsList";
 import { StatusBar } from "./ui/StatusBar";
 import { SetupWizard } from "./ui/SetupWizard";
-import { ModelPicker, type ModelChoice } from "./ui/ModelPicker";
+import { ModelPicker } from "./ui/ModelPicker";
 import { EffortPicker } from "./ui/EffortPicker";
 import { SlashMenu, filterSlashCommands } from "./ui/SlashMenu";
 import { ConnectPrompt } from "./ui/ConnectPrompt";
 import { ClarifyPrompt } from "./ui/ClarifyPrompt";
 import { ClientIdPrompt } from "./ui/ClientIdPrompt";
 import { SystemPromptPrompt } from "./ui/SystemPromptPrompt";
+import { SettingsScreen } from "./ui/SettingsScreen";
 import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
 import { theme } from "./ui/theme";
@@ -75,9 +79,10 @@ export function App() {
   const [clientIdError, setClientIdError] = useState<string | undefined>(
     undefined,
   );
-  const [claudeFamilyOpen, setClaudeFamilyOpen] = useState(false);
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [systemPromptText, setSystemPromptText] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   const [input, setInput] = useState("");
   const [authed, setAuthed] = useState(false);
   const authedRef = useRef(false);
@@ -115,8 +120,20 @@ export function App() {
     null,
   );
   const [isPlaying, setIsPlaying] = useState(false);
+  const [volume, setVolume] = useState<number | null>(null);
+  // Mute state: mutedVolume holds the pre-mute level so a second M restores it.
+  const [mutedVolume, setMutedVolume] = useState<number | null>(null);
   const [memoryText, setMemoryText] = useState<string | null>(null);
   const [forgetOpen, setForgetOpen] = useState(false);
+  const [toast, setToast] = useState<{ msg: string; ts: number } | null>(null);
+  function show(msg: string) {
+    setToast({ msg, ts: Date.now() });
+  }
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(id);
+  }, [toast]);
   // Taste sessions group by generation; /like lands in the latest one.
   const sessionHeaderRef = useRef<string>(new Date().toISOString().slice(0, 16));
 
@@ -139,6 +156,11 @@ export function App() {
   useEffect(() => {
     loadConfig().then(async (c) => {
       setConfig(c);
+      setVolume(c.volume);
+      // Local backends: prime the mpv singleton with the persisted volume so
+      // the first track plays at the right level. Spotify volume is set per
+      // playback action since there's no persistent mpv for it.
+      player.setInitialVolume(c.volume);
       const a = await isAuthenticated(c);
       authedRef.current = a;
       setAuthed(a);
@@ -171,11 +193,13 @@ export function App() {
           if (cancelled) return;
           setCurrentlyPlayingUri(state?.uri ?? null);
           setIsPlaying(state?.isPlaying ?? false);
+          if (typeof state?.volume === "number") setVolume(state.volume);
         } else {
           const state = await player.getCurrentlyPlaying();
           if (cancelled) return;
           setCurrentlyPlayingUri(state?.track?.uri ?? null);
           setIsPlaying(state?.isPlaying ?? false);
+          if (typeof state?.volume === "number") setVolume(state.volume);
         }
       } catch {
         // ignore polling errors
@@ -202,25 +226,59 @@ export function App() {
     !clientIdOpen &&
     !effortPickerOpen &&
     !systemPromptOpen &&
+    !settingsOpen &&
     slashCommands.length > 0;
 
   const isSpotifyBackend = config?.musicBackend !== "soundcloud" && config?.musicBackend !== "youtube-music";
 
   const provider: AgentProvider | null = useMemo(() => {
     if (!config) return null;
-    return config.defaultProvider === "ollama"
-      ? new OllamaProvider({ url: config.ollamaUrl, model: config.ollamaModel })
-      : new ClaudeCliProvider({
+    switch (config.defaultProvider) {
+      case "ollama":
+        return new OllamaProvider({ url: config.ollamaUrl, model: config.ollamaModel });
+      case "opencode-go":
+        return new OpencodeProvider({
+          name: "opencode-go",
+          apiKey: config.opencodeGoApiKey,
+          baseUrl: config.opencodeGoBaseUrl,
+          model: config.opencodeGoModel,
+        });
+      case "opencode-zen":
+        return new OpencodeProvider({
+          name: "opencode-zen",
+          apiKey: config.opencodeZenApiKey,
+          baseUrl: config.opencodeZenBaseUrl,
+          model: config.opencodeZenModel,
+        });
+      case "openai": {
+        return new OpenAIProvider({
+          authMode: config.openaiAuthMode,
+          apiKey: config.openaiApiKey,
+          subsToken: config.openaiSubsToken,
+          baseUrl: config.openaiBaseUrl,
+          model: config.openaiModel,
+        });
+      }
+      case "claude-cli":
+      default:
+        return new ClaudeCliProvider({
           model: config.claudeModel,
           effort: config.claudeEffort,
           systemPrompt: config.customSystemPrompt,
         });
+    }
   }, [config]);
 
   const modelLabel = config
     ? config.defaultProvider === "ollama"
       ? `ollama:${config.ollamaModel}`
-      : `claude:${config.claudeModel} · effort:${config.claudeEffort}`
+      : config.defaultProvider === "opencode-go"
+        ? `opencode-go:${config.opencodeGoModel}`
+        : config.defaultProvider === "opencode-zen"
+          ? `opencode-zen:${config.opencodeZenModel}`
+          : config.defaultProvider === "openai"
+            ? `openai:${config.openaiModel} · ${config.openaiAuthMode}`
+            : `claude:${config.claudeModel} · effort:${config.claudeEffort}`
     : "";
 
   const lines: ResultLine[] = useMemo(() => {
@@ -253,6 +311,9 @@ export function App() {
   useKeyboard(async (key) => {
     if (key.ctrl && key.name === "c") process.exit(0);
     if (screen !== "main") return;
+    // SettingsScreen owns its own keyboard (Esc nav through 3 levels); App
+    // must not also react while it's open. Ctrl+C above still works.
+    if (settingsOpen) return;
     if (confirmConnect) {
       if (key.name === "y") {
         const resume = pendingPrompt;
@@ -329,13 +390,8 @@ export function App() {
       return;
     }
     if (pickerOpen) {
-      if (key.name === "escape") {
-        if (claudeFamilyOpen) {
-          setClaudeFamilyOpen(false);
-        } else {
-          setPickerOpen(false);
-        }
-      }
+      // ModelPicker owns its own keyboard (Esc navigates its 3 levels); App
+      // must not also react. Ctrl+C above still works.
       return;
     }
     if (slashMenuOpen) {
@@ -383,14 +439,30 @@ export function App() {
       return;
     }
     if (key.ctrl && key.name === "p") {
-      await applyModelChoice(
-        config?.defaultProvider === "ollama"
-          ? {
-              provider: "claude-cli",
-              claudeModel: config?.claudeModel ?? "sonnet",
-            }
-          : { provider: "ollama", ollamaModel: config?.ollamaModel },
-      );
+      await quickToggleModel();
+      return;
+    }
+    // Volume: ←/→ step by 5%, M toggles mute (restores pre-mute level). These
+    // are printable/navigation keys the focused <input> would also consume, so
+    // stop the event from reaching it — otherwise "m" gets typed while muting
+    // and ←/→ move the text cursor as well as the volume. Skipped while the
+    // slash menu is open so those keys navigate the menu / edit the query.
+    if (!slashMenuOpen && key.name === "left") {
+      key.stopPropagation();
+      key.preventDefault();
+      await adjustVolume(-5);
+      return;
+    }
+    if (!slashMenuOpen && key.name === "right") {
+      key.stopPropagation();
+      key.preventDefault();
+      await adjustVolume(5);
+      return;
+    }
+    if (!slashMenuOpen && key.name === "m" && !key.ctrl && !key.meta) {
+      key.stopPropagation();
+      key.preventDefault();
+      await toggleMute();
       return;
     }
     // Input owns printable keys; only handle chrome/navigation.
@@ -431,6 +503,7 @@ export function App() {
       void token;
       authedRef.current = true;
       setAuthed(true);
+      if (resumePrompt === null) show("logged in ✓");
       if (resumePrompt) {
         if (resumePrompt === "__random__") {
           setHasInteracted(true);
@@ -463,15 +536,129 @@ export function App() {
     await runLoginAndResume(resume, next);
   }
 
-  async function applyModelChoice(choice: ModelChoice) {
+  // Ctrl+P quick-toggle between ollama and claude-cli. The full /model picker
+  // is a multi-level config UI; this shortcut bypasses it for the common case.
+  async function quickToggleModel() {
     const next = await saveConfig({
-      defaultProvider: choice.provider,
-      ...(choice.ollamaModel ? { ollamaModel: choice.ollamaModel } : {}),
-      ...(choice.claudeModel ? { claudeModel: choice.claudeModel } : {}),
+      defaultProvider: config?.defaultProvider === "ollama" ? "claude-cli" : "ollama",
+      ...(config?.defaultProvider === "ollama"
+        ? { claudeModel: config?.claudeModel ?? "sonnet" }
+        : { ollamaModel: config?.ollamaModel }),
     });
     setConfig(next);
-    setClaudeFamilyOpen(false);
     setPickerOpen(false);
+  }
+
+  // /model: commit defaultProvider + close the picker (the "▶ use" action).
+  // Validates required credentials so the user doesn't switch to a provider
+  // that will throw at generate() time — they stay on the config page and see
+  // an error pointing at the missing field.
+  function missingProviderFields(provider: string, cfg: Config): string | null {
+    if (provider === "opencode-go") {
+      if (!cfg.opencodeGoApiKey) return "opencode-go needs an api key — edit the field first";
+      if (!cfg.opencodeGoBaseUrl) return "opencode-go needs a base url — edit the field first";
+    }
+    if (provider === "opencode-zen") {
+      if (!cfg.opencodeZenApiKey) return "opencode-zen needs an api key — edit the field first";
+      if (!cfg.opencodeZenBaseUrl) return "opencode-zen needs a base url — edit the field first";
+    }
+    if (provider === "openai") {
+      if (cfg.openaiAuthMode === "api" && !cfg.openaiApiKey)
+        return "openai api mode needs an api key — edit the field first";
+      if (cfg.openaiAuthMode === "subs" && !cfg.openaiSubsToken)
+        return "openai subs mode needs a subs token — edit the field first";
+    }
+    return null;
+  }
+
+  async function onUseProvider(provider: string, opts?: { closePicker?: boolean }): Promise<string | null> {
+    if (config) {
+      const missing = missingProviderFields(provider, config);
+      if (missing) {
+        setError(missing);
+        return missing;
+      }
+    }
+    const next = await saveConfig({ defaultProvider: provider });
+    setConfig(next);
+    if (opts?.closePicker ?? true) setPickerOpen(false);
+    return null;
+  }
+
+  // /model: save a field edit without switching provider (editing apiKey/baseUrl
+  // on a provider's config page). Keeps the picker open so the user can then
+  // hit "▶ use".
+  async function onSaveField(partial: FileConfig) {
+    const next = await saveConfig(partial);
+    setConfig(next);
+  }
+
+  async function applySettingsEdit(partial: FileConfig) {
+    // /settings is Music-only now. A backend switch must run the same cleanup
+    // as applyBackendChoice: old-backend URIs can't be played or committed on
+    // the new backend, so drop the resolved list and stop playback.
+    const switchingBackend =
+      partial.musicBackend !== undefined &&
+      partial.musicBackend !== config?.musicBackend;
+    if (switchingBackend) {
+      await player.stop();
+      setCurrentlyPlayingUri(null);
+      setIsPlaying(false);
+      setAwaitingConfirm(false);
+      setResolved(null);
+      setCommittedPlaylist(null);
+      setSelectedIndex(0);
+    }
+    const next = await saveConfig(partial);
+    setConfig(next);
+    if (switchingBackend) {
+      setError(
+        checkLocalPlaybackDeps(next.musicBackend) ?? undefined,
+      );
+    }
+  }
+
+  // Push a new volume to the active backend and persist it. Spotify routes
+  // through its Web API; local backends go through the mpv singleton. The
+  // polling effect keeps `volume` in sync if the backend changes it on its
+  // side (e.g. another Spotify client).
+  async function applyVolume(pct: number) {
+    const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+    setVolume(clamped);
+    const next = await saveConfig({ volume: clamped });
+    setConfig(next);
+    try {
+      if (isSpotifyBackend && authedRef.current && config) {
+        const token = await getAccessToken(config);
+        await new SpotifyClient(token).setVolume(clamped);
+      } else {
+        await player.setVolume(clamped);
+      }
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    }
+  }
+
+  async function adjustVolume(delta: number) {
+    const base = volume ?? config?.volume ?? 70;
+    // If muted, adjusting from the muted level feels wrong — start from the
+    // remembered pre-mute level instead so the first tap unmutes and moves.
+    const from = mutedVolume !== null ? mutedVolume : base;
+    const next = Math.max(0, Math.min(100, from + delta));
+    if (mutedVolume !== null) setMutedVolume(null);
+    await applyVolume(next);
+  }
+
+  async function toggleMute() {
+    if (mutedVolume !== null) {
+      const restore = mutedVolume;
+      setMutedVolume(null);
+      await applyVolume(restore);
+    } else {
+      const current = volume ?? config?.volume ?? 70;
+      setMutedVolume(current);
+      await applyVolume(0);
+    }
   }
 
   async function applyBackendChoice(backend: MusicBackend) {
@@ -504,8 +691,11 @@ export function App() {
     setSystemPromptOpen(false);
   }
 
-  async function runResolve(prompt: string, qa: ClarifyAnswer[]) {
-    if (!config || !provider) return;
+  async function runResolve(
+    prompt: string,
+    qa: ClarifyAnswer[],
+  ): Promise<ResolvedPlaylist | null> {
+    if (!config || !provider) return null;
     setError(undefined);
     setLoading(true);
     setProgress(null);
@@ -537,6 +727,7 @@ export function App() {
       setAwaitingConfirm(true);
       setSelectedIndex(0);
       void recordTasteSession(r);
+      return r;
     } catch (e) {
       // User-initiated cancel is not an error.
       if (!(
@@ -545,6 +736,7 @@ export function App() {
       )) {
         setError(String(e instanceof Error ? e.message : e));
       }
+      return null;
     } finally {
       abortRef.current = null;
       disarmEsc();
@@ -625,6 +817,7 @@ export function App() {
         // No playlists on the service side — the local queue is the playlist.
         await player.queue(resolved.resolved, music);
         setAwaitingConfirm(false);
+        show(`queued ${resolved.resolved.length} tracks locally`);
         return;
       }
       setAuthed(true);
@@ -638,6 +831,7 @@ export function App() {
       setCommittedPlaylist(playlist);
       setAwaitingConfirm(false);
       setProgress(null);
+      show(`saved as playlist · ${playlist.name ?? playlist.uri}`);
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     }
@@ -690,6 +884,12 @@ export function App() {
       setSystemPromptOpen(true);
       return;
     }
+    if (trimmed === "/settings") {
+      setInput("");
+      setSettingsSection(undefined);
+      setSettingsOpen(true);
+      return;
+    }
     if (trimmed === "/save") {
       setInput("");
       if (!resolved) {
@@ -718,6 +918,7 @@ export function App() {
         : `- ${track.artist} – ${track.title} (liked)`;
       const taste = await loadTaste();
       await saveTaste(addLine(taste, sessionHeaderRef.current, line));
+      show(`liked · ${track.artist} – ${track.title}`);
       return;
     }
     if (trimmed === "/memory") {
@@ -745,14 +946,18 @@ export function App() {
     if (trimmed === "/quit") process.exit(0);
     if (trimmed === "/random") {
       setInput("");
-      if (!config || !provider || loading) return;
+      if (!config || !provider || loading) {
+        setError("not ready — still loading or no provider");
+        return;
+      }
       if (isSpotifyBackend && !authedRef.current) {
         setPendingPrompt("__random__");
         setConfirmConnect(true);
         return;
       }
       setHasInteracted(true);
-      await runResolve(generateRandomPlaylistUser(), []);
+      const r = await runResolve(generateRandomPlaylistUser(), []);
+      if (r) show(`random playlist ready · ${r.resolved.length} tracks`);
       return;
     }
     if (trimmed.length === 0) {
@@ -865,12 +1070,6 @@ export function App() {
     }
   }
 
-  const currentChoice: ModelChoice | undefined = config
-    ? config.defaultProvider === "ollama"
-      ? { provider: "ollama", ollamaModel: config.ollamaModel }
-      : { provider: "claude-cli", claudeModel: config.claudeModel }
-    : undefined;
-
   const columnWidth = Math.min(72, Math.max(40, width - 4));
   // Short terminals can't fit logo + input + slash menu + status bar at once.
   // Shrink the slash menu and drop the logo so the layout never overflows.
@@ -884,7 +1083,8 @@ export function App() {
     !backendPickerOpen &&
     !clientIdOpen &&
     !effortPickerOpen &&
-    !systemPromptOpen;
+    !systemPromptOpen &&
+    !settingsOpen;
   // Clarify Q&A gets the same centered treatment as the initial prompt.
   const clarifyActive =
     screen === "main" &&
@@ -892,6 +1092,7 @@ export function App() {
     !backendPickerOpen &&
     !effortPickerOpen &&
     !systemPromptOpen &&
+    !settingsOpen &&
     clarifyQuestions !== null;
 
   const playingTrack = resolved?.resolved.find((t) => t.uri === currentlyPlayingUri);
@@ -915,7 +1116,8 @@ export function App() {
           !awaitingConfirm &&
           !clientIdOpen &&
           !effortPickerOpen &&
-          !systemPromptOpen
+          !systemPromptOpen &&
+          !settingsOpen
         }
       />
       {slashMenuOpen && (
@@ -987,14 +1189,14 @@ export function App() {
           />
         )}
 
-        {screen === "main" && pickerOpen && (
+        {screen === "main" && pickerOpen && config && (
           <ModelPicker
             ollamaModels={ollamaModels}
+            config={config}
             focused
-            onPick={applyModelChoice}
-            current={currentChoice}
-            claudeFamilyOpen={claudeFamilyOpen}
-            onOpenClaudeFamily={() => setClaudeFamilyOpen(true)}
+            onUseProvider={onUseProvider}
+            onSaveField={onSaveField}
+            onClose={() => setPickerOpen(false)}
           />
         )}
 
@@ -1038,6 +1240,19 @@ export function App() {
           />
         )}
 
+        {screen === "main" && settingsOpen && config && (
+          <SettingsScreen
+            config={config}
+            initialSection={settingsSection}
+            focused
+            onSave={applySettingsEdit}
+            onClose={() => {
+              setSettingsOpen(false);
+              setSettingsSection(undefined);
+            }}
+          />
+        )}
+
         {screen === "main" && !pickerOpen && clarifyQuestions !== null && (
           <ClarifyPrompt
             questionText={clarifyQuestions[clarifyStepIndex]!.text}
@@ -1061,6 +1276,7 @@ export function App() {
           !clientIdOpen &&
           !effortPickerOpen &&
           !systemPromptOpen &&
+          !settingsOpen &&
           clarifyQuestions === null && (
             <>
               {centered && inputCluster}
@@ -1092,6 +1308,11 @@ export function App() {
                   </text>
                 </box>
               ) : null}
+              {toast && !loading && !connecting ? (
+                <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
+                  <text fg={theme.green}> ✓ {toast.msg}</text>
+                </box>
+              ) : null}
               <StatusBar
                 model={modelLabel}
                 backend={config?.musicBackend ?? "spotify"}
@@ -1104,6 +1325,8 @@ export function App() {
                 elapsed={elapsed}
                 cancelHint={escArmed}
                 excludedCount={resolved?.unresolved.length}
+                volume={volume}
+                muted={mutedVolume !== null}
               />
             </>
           )}

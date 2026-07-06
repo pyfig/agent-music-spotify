@@ -4,6 +4,12 @@ import { join } from "node:path";
 import { unlink } from "node:fs/promises";
 import type { MusicBackend, MusicProvider, Track } from "./types";
 
+/** Clamp a volume value to 0-100 and round to integer. */
+function clampVolume(pct: number): number {
+  if (!Number.isFinite(pct)) return 0;
+  return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
 /** Minimal surface of mpv's JSON IPC we depend on; injectable for tests. */
 export interface MpvHandle {
   send(cmd: unknown[]): Promise<unknown>;
@@ -15,6 +21,7 @@ export interface PlayingState {
   track: Track | null;
   isPlaying: boolean;
   positionMs: number;
+  volume: number | null;
 }
 
 /**
@@ -25,7 +32,8 @@ export interface RemotePlaybackClient {
   play(uri: string): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
-  getCurrentlyPlaying(): Promise<{ uri: string | null; isPlaying: boolean } | null>;
+  getCurrentlyPlaying(): Promise<{ uri: string | null; isPlaying: boolean; volume?: number | null } | null>;
+  setVolume?(percent: number): Promise<void>;
 }
 
 interface PlayerDeps {
@@ -129,6 +137,9 @@ export class PlayerController {
   private isPlayingLocal = false;
   private remote: RemotePlaybackClient | null = null;
   private remoteTrack: Track | null = null;
+  // Last known volume (0-100). Persisted via config; applied to mpv on spawn
+  // and to Spotify on play. Kept in sync with the backend by getCurrentlyPlaying.
+  private volume = 100;
 
   constructor(deps: PlayerDeps = {}) {
     this.startMpv = deps.startMpv ?? spawnMpv;
@@ -139,6 +150,11 @@ export class PlayerController {
     this.remote = client;
   }
 
+  /** Set the desired volume before mpv starts; applied on ensureMpv(). */
+  setInitialVolume(pct: number): void {
+    this.volume = clampVolume(pct);
+  }
+
   private async ensureMpv(): Promise<MpvHandle> {
     if (this.mpv) return this.mpv;
     const handle = await this.startMpv(socketPath());
@@ -146,6 +162,13 @@ export class PlayerController {
       if (ev.event === "end-file" && ev.reason === "eof") void this.next();
     });
     this.mpv = handle;
+    // Apply the configured volume as soon as mpv is up so the first track
+    // plays at the right level instead of mpv's default (100).
+    try {
+      await handle.send(["set_property", "volume", this.volume]);
+    } catch {
+      // volume property set can fail on some mpv builds with no audio sink yet
+    }
     return handle;
   }
 
@@ -202,6 +225,22 @@ export class PlayerController {
     this.isPlayingLocal = true;
   }
 
+  /** Set volume on the active backend (mpv or remote Spotify). 0-100. */
+  async setVolume(pct: number): Promise<void> {
+    this.volume = clampVolume(pct);
+    if (this.remote) {
+      await this.remote.setVolume?.(this.volume);
+      return;
+    }
+    if (this.mpv) {
+      try {
+        await this.mpv.send(["set_property", "volume", this.volume]);
+      } catch {
+        // mpv not ready yet — volume will be applied on next ensureMpv.
+      }
+    }
+  }
+
   /** Remote branch needs the Track for display; caller passes what it played. */
   async playRemote(track: Track): Promise<void> {
     if (!this.remote) throw new Error("no remote playback client attached");
@@ -213,10 +252,12 @@ export class PlayerController {
     if (this.remote) {
       const state = await this.remote.getCurrentlyPlaying();
       if (!state) return null;
+      if (typeof state.volume === "number") this.volume = clampVolume(state.volume);
       return {
         track: this.remoteTrack,
         isPlaying: state.isPlaying,
         positionMs: 0,
+        volume: state.volume ?? this.volume,
       };
     }
     const track = this.queueTracks[this.queueIndex];
@@ -224,10 +265,15 @@ export class PlayerController {
     const pos = (await this.mpv.send(["get_property", "time-pos"]).catch(() => 0)) as
       | number
       | null;
+    const vol = (await this.mpv.send(["get_property", "volume"]).catch(() => null)) as
+      | number
+      | null;
+    if (typeof vol === "number") this.volume = clampVolume(vol);
     return {
       track,
       isPlaying: this.isPlayingLocal,
       positionMs: Math.round((pos ?? 0) * 1000),
+      volume: typeof vol === "number" ? clampVolume(vol) : this.volume,
     };
   }
 

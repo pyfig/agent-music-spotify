@@ -248,7 +248,7 @@ export class SpotifyClient implements MusicProvider {
     await this.request("/me/player/play", { method: "PUT" });
   }
 
-  async getCurrentlyPlaying(): Promise<{ uri: string | null; isPlaying: boolean } | null> {
+  async getCurrentlyPlaying(): Promise<{ uri: string | null; isPlaying: boolean; volume?: number | null } | null> {
     const res = await fetch(`${API_BASE}/me/player`, {
       headers: { authorization: `Bearer ${this.accessToken}` },
     });
@@ -258,7 +258,22 @@ export class SpotifyClient implements MusicProvider {
     return {
       uri: data?.item?.uri ?? data?.context?.uri ?? null,
       isPlaying: data?.is_playing ?? false,
+      volume: typeof data?.device?.volume_percent === "number" ? data.device.volume_percent : null,
     };
+  }
+
+  async setVolume(percent: number, deviceId?: string): Promise<void> {
+    const pct = Math.max(0, Math.min(100, Math.round(percent)));
+    // Spotify requires an active device; resolve one the same way play() does.
+    const devices = await this.getDevices();
+    if (devices.length === 0) {
+      throw new Error("No Spotify devices found. Open Spotify app on any device first.");
+    }
+    const activeDevice = devices.find((d) => d.isActive);
+    const targetDeviceId = deviceId ?? activeDevice?.id ?? devices[0]?.id;
+    await this.request(`/me/player/volume?volume_percent=${pct}&device_id=${targetDeviceId}`, {
+      method: "PUT",
+    });
   }
 
   async saveAlbum(albumId: string): Promise<void> {

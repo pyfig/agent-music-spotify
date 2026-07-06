@@ -117,3 +117,18 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 - `SOUNDCLOUD_CLIENT_ID` — api-v2 client_id; optional — auto-scraped from soundcloud.com and cached in config when unset.
 - `YTMUSIC_COOKIE` — reserved for future YouTube Music library access; not required (search and playback are anonymous).
 - Local backends (soundcloud, youtube-music) play through `mpv` (JSON IPC); youtube-music also needs `yt-dlp`. Both are external binaries checked at startup, not npm packages.
+
+### AI model providers (`DEFAULT_PROVIDER`)
+
+- `DEFAULT_PROVIDER` — `claude-cli` (default) | `ollama` | `opencode-go` | `opencode-zen` | `openai`. Selectable at runtime via `/model`.
+- `OLLAMA_URL` / `OLLAMA_MODEL` — local Ollama daemon URL + model (defaults `http://127.0.0.1:11434` / `llama3`).
+- `CLAUDE_MODEL` / `CLAUDE_EFFORT` / `CLAUDE_SYSTEM_PROMPT` — Claude CLI model alias, reasoning effort, and optional system prompt override (auth is delegated to the installed `claude` CLI binary).
+- `OPENCODE_ZEN_API_KEY` / `OPENCODE_ZEN_BASE_URL` — bearer token + base URL for the opencode Zen tier (default base URL `https://opencode.ai/zen/v1`, per opencode.ai/docs/zen).
+- `OPENCODE_GO_API_KEY` / `OPENCODE_GO_BASE_URL` — bearer token + base URL for the opencode Go tier, a separate subscription with its own key (default base URL `https://opencode.ai/zen/go/v1`, not publicly documented — override if it differs for your account).
+- `OPENCODE_GO_MODEL` / `OPENCODE_ZEN_MODEL` — model ids for the two hosted instances (defaults `glm-5.2` / `claude-sonnet-5`).
+- `OPENAI_AUTH_MODE` — `api` (default) | `subs`. Auto-picks `subs` if only `OPENAI_SUBS_TOKEN` is set. `api` uses `OPENAI_API_KEY`; `subs` uses `OPENAI_SUBS_TOKEN` (ChatGPT subscription bearer).
+- `OPENAI_API_KEY` — platform key (starts with `sk-`) for `api` mode.
+- `OPENAI_SUBS_TOKEN` — ChatGPT subscription bearer token for `subs` mode.
+- `OPENAI_BASE_URL` — chat completions base URL (default `https://api.openai.com/v1`).
+- `OPENAI_MODEL` — model id (default `gpt-5`).
+- `VOLUME` — playback volume 0-100 (default 70); persisted in config.json after adjustment via ←/→ in the TUI.

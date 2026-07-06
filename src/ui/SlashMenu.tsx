@@ -17,6 +17,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/like", description: "remember current track (optional comment)" },
   { cmd: "/memory", description: "show saved taste memory" },
   { cmd: "/forget", description: "clear taste memory" },
+  { cmd: "/settings", description: "configure providers & backends (all fields)" },
   { cmd: "/quit", description: "exit vibedeck" },
 ];
 
