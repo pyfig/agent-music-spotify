@@ -44,6 +44,7 @@ The built-in client ID is shared and its API quota can run out (you'll see a `42
 
 - `/` opens the command dropdown — arrows navigate, **Tab** completes, **Enter** runs:
   - `/model` — switch AI provider/model
+  - `/settings` — configure provider keys, models, base URLs
   - `/random` — let the model pick a genre
   - `/save` — save the current track list as a playlist
   - `/clientid` — set your own Spotify app client ID
@@ -87,8 +88,12 @@ Optional overrides — env vars (`MUSIC_BACKEND`, `SPOTIFY_CLIENT_ID`, `SOUNDCLO
 
 ### Agent provider
 
+Cycle with **Ctrl+P** or `/model`, configure keys/models in `/settings`.
+
 - **claude-cli**: requires the `claude` CLI installed and authenticated on your machine.
 - **ollama**: requires a running Ollama daemon (`ollama serve`) with a pulled model.
+- **opencode: go / opencode: zen**: opencode hosted models — separate paid tiers, each with its own API key + base URL (`OPENCODE_GO_API_KEY` / `OPENCODE_ZEN_API_KEY`).
+- **openai**: OpenAI Chat Completions, API key or subscription token (`OPENAI_API_KEY` / `OPENAI_SUBS_TOKEN`).
 
 ## Run from source
 
@@ -109,4 +114,4 @@ bun test
 
 ## Not yet implemented
 
-codex CLI / OpenRouter agent providers, album art rendering, live playback progress, playlist editing after creation.
+OpenRouter agent provider, album art rendering, live playback progress, playlist editing after creation.
