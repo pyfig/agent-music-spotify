@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useKeyboard } from "@opentui/react";
-import { ModelPicker, type ModelChoice } from "./ModelPicker";
+import { ProviderList, type ProviderPick } from "./ProviderList";
 import { MusicBackendPicker } from "./MusicBackendPicker";
 import { PromptInput } from "./PromptInput";
 import { checkLocalPlaybackDeps } from "../music/playback";
@@ -8,7 +8,7 @@ import { scrapeClientId } from "../music/soundcloud/auth";
 import type { MusicBackend } from "../music/types";
 import { theme } from "./theme";
 
-export type SetupResult = ModelChoice & {
+export type SetupResult = ProviderPick & {
   musicBackend: MusicBackend;
   soundcloudClientId?: string;
 };
@@ -23,7 +23,6 @@ type Step = "backend" | "deps" | "sc-auto" | "sc-manual" | "model";
 export function SetupWizard({ ollamaModels, onDone }: SetupWizardProps) {
   const [step, setStep] = useState<Step>("backend");
   const [backend, setBackend] = useState<MusicBackend>("spotify");
-  const [claudeFamilyOpen, setClaudeFamilyOpen] = useState(false);
   const [depError, setDepError] = useState<string | null>(null);
   const [scClientId, setScClientId] = useState<string | undefined>(undefined);
   const [scManualText, setScManualText] = useState("");
@@ -70,10 +69,6 @@ export function SetupWizard({ ollamaModels, onDone }: SetupWizardProps) {
   }, [step]);
 
   useKeyboard((key) => {
-    if (step === "model" && claudeFamilyOpen && key.name === "escape") {
-      setClaudeFamilyOpen(false);
-      return;
-    }
     if (step === "deps") {
       if (key.name === "r") {
         const err = checkLocalPlaybackDeps(backend);
@@ -143,7 +138,7 @@ export function SetupWizard({ ollamaModels, onDone }: SetupWizardProps) {
           {scClientId && (
             <text fg={theme.muted}>soundcloud client_id: {scClientId.slice(0, 8)}… ✓</text>
           )}
-          <ModelPicker
+          <ProviderList
             ollamaModels={ollamaModels}
             focused
             onPick={(choice) =>
@@ -153,8 +148,6 @@ export function SetupWizard({ ollamaModels, onDone }: SetupWizardProps) {
                 ...(scClientId ? { soundcloudClientId: scClientId } : {}),
               })
             }
-            claudeFamilyOpen={claudeFamilyOpen}
-            onOpenClaudeFamily={() => setClaudeFamilyOpen(true)}
           />
           {ollamaModels.length === 0 && (
             <text fg={theme.muted}>(ollama daemon not reachable — only claude-cli listed)</text>

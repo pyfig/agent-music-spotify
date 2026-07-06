@@ -13,6 +13,8 @@ interface StatusBarProps {
   elapsed?: number;
   cancelHint?: boolean;
   excludedCount?: number;
+  volume?: number | null;
+  muted?: boolean;
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -20,6 +22,12 @@ const BAR_WIDTH = 10;
 
 function progressBar(current: number, total: number): string {
   const filled = total > 0 ? Math.round((current / total) * BAR_WIDTH) : 0;
+  return "█".repeat(filled) + "░".repeat(BAR_WIDTH - filled);
+}
+
+function volumeBar(pct: number): string {
+  const v = Math.max(0, Math.min(100, Math.round(pct)));
+  const filled = Math.round((v / 100) * BAR_WIDTH);
   return "█".repeat(filled) + "░".repeat(BAR_WIDTH - filled);
 }
 
@@ -55,6 +63,8 @@ export function StatusBar({
   elapsed = 0,
   cancelHint = false,
   excludedCount = 0,
+  volume = null,
+  muted = false,
 }: StatusBarProps) {
   const backendLabel = `♪ ${backend} ${authed ? "✓" : "—"}`;
   return (
@@ -82,6 +92,15 @@ export function StatusBar({
           </text>
           {!!excludedCount && !loading && !error ? (
             <text fg={theme.maroon}> · {excludedCount} excluded</text>
+          ) : null}
+          {muted ? (
+            <text fg={theme.maroon}> · 🔇 muted</text>
+          ) : volume !== null ? (
+            <>
+              <text fg={theme.subtext}> · vol </text>
+              <text fg={theme.accent}>{volumeBar(volume)}</text>
+              <text fg={theme.subtext}> {volume}%</text>
+            </>
           ) : null}
         </>
       )}

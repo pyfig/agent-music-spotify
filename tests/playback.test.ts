@@ -110,4 +110,30 @@ describe("PlayerController local playback", () => {
     expect(mpv.killed).toBe(false);
     expect(mpv.commands).toContainEqual(["loadfile", "https://stream.example/sc:3", "replace"]);
   });
+
+  test("setVolume writes mpv volume property and clamps 0-100", async () => {
+    const { mpv, controller } = makeController();
+    await controller.queue([makeTrack(1)], makeLocalProvider());
+    await controller.setVolume(42);
+    expect(mpv.commands).toContainEqual(["set_property", "volume", 42]);
+    await controller.setVolume(150);
+    expect(mpv.commands).toContainEqual(["set_property", "volume", 100]);
+    await controller.setVolume(-10);
+    expect(mpv.commands).toContainEqual(["set_property", "volume", 0]);
+  });
+
+  test("getCurrentlyPlaying reports volume from mpv volume property", async () => {
+    const { mpv, controller } = makeController();
+    mpv.properties["volume"] = 55;
+    await controller.queue([makeTrack(1)], makeLocalProvider());
+    const state = await controller.getCurrentlyPlaying();
+    expect(state?.volume).toBe(55);
+  });
+
+  test("setInitialVolume is applied when mpv starts", async () => {
+    const { mpv, controller } = makeController();
+    controller.setInitialVolume(30);
+    await controller.queue([makeTrack(1)], makeLocalProvider());
+    expect(mpv.commands).toContainEqual(["set_property", "volume", 30]);
+  });
 });
