@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { OpencodeProvider } from "../src/agent/providers/opencode";
+import { MUSIC_AGENT_TOOLS } from "../src/agent/tools";
 
 const realFetch = globalThis.fetch;
 
@@ -43,7 +44,8 @@ describe("OpencodeProvider model-family routing", () => {
       baseUrl: "https://opencode.ai/zen/v1",
       model: "glm-5.2",
     });
-    const text = await provider.generate("sys", "hi");
+    const result = await provider.generate("sys", "hi");
+    const text = result.text;
     expect(text).toBe("hello");
     expect(calls[0]!.url).toBe("https://opencode.ai/zen/v1/chat/completions");
     expect(calls[0]!.body.messages).toEqual([
@@ -67,7 +69,8 @@ describe("OpencodeProvider model-family routing", () => {
       baseUrl: "https://opencode.ai/zen/v1",
       model: "claude-sonnet-5",
     });
-    const text = await provider.generate("sys", "hi");
+    const result = await provider.generate("sys", "hi");
+    const text = result.text;
     expect(text).toBe("hello");
     expect(calls[0]!.url).toBe("https://opencode.ai/zen/v1/messages");
     expect(calls[0]!.body.system).toBe("sys");
@@ -88,7 +91,8 @@ describe("OpencodeProvider model-family routing", () => {
       baseUrl: "https://opencode.ai/zen/v1",
       model: "gpt-5.5",
     });
-    const text = await provider.generate("sys", "hi");
+    const result = await provider.generate("sys", "hi");
+    const text = result.text;
     expect(text).toBe("hello");
     expect(calls[0]!.url).toBe("https://opencode.ai/zen/v1/responses");
     expect(calls[0]!.body.instructions).toBe("sys");
@@ -110,7 +114,8 @@ describe("OpencodeProvider model-family routing", () => {
       baseUrl: "https://opencode.ai/zen/go/v1",
       model: "minimax-m3",
     });
-    const text = await provider.generate("sys", "hi");
+    const result = await provider.generate("sys", "hi");
+    const text = result.text;
     expect(text).toBe("hello");
     expect(calls[0]!.url).toBe("https://opencode.ai/zen/go/v1/messages");
   });
@@ -129,7 +134,8 @@ describe("OpencodeProvider model-family routing", () => {
       baseUrl: "https://opencode.ai/zen/v1",
       model: "gemini-2.5-pro",
     });
-    const text = await provider.generate("sys", "hi");
+    const result = await provider.generate("sys", "hi");
+    const text = result.text;
     expect(text).toBe("hello");
     expect(calls[0]!.url).toBe("https://opencode.ai/zen/v1/models/gemini-2.5-pro");
     expect(calls[0]!.body.systemInstruction.parts[0].text).toBe("sys");
@@ -200,5 +206,88 @@ describe("OpencodeProvider credential sanitization", () => {
     }
     expect(message).toMatch(/API key rejected/);
     expect(message).not.toMatch(/#17541/);
+  });
+});
+
+describe("OpencodeProvider tool-calling: opts.tools makes the request carry tools", () => {
+  test("openai-compat: the chat/completions body includes `tools` matching the spec family", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));
+    const provider = new OpencodeProvider({
+      name: "opencode-go",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      model: "glm-5.2",
+    });
+    await provider.generate("sys", "hi", undefined, undefined, { tools: MUSIC_AGENT_TOOLS });
+    const body = calls[0]!.body as any;
+    expect(Array.isArray(body.tools)).toBe(true);
+    expect(body.tools.length).toBe(MUSIC_AGENT_TOOLS.length);
+    // First slot is the function-tool shape for OpenAI Chat Completions.
+    expect(body.tools[0].type).toBe("function");
+    expect(body.tools[0].function.name).toBe(MUSIC_AGENT_TOOLS[0]!.name);
+    // First-call are present; auto pick confirmed.
+    expect(body.tool_choice).toBe("auto");
+  });
+
+  test("anthropic: the /messages body includes `tools` in Anthropic shape (input_schema)", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    const provider = new OpencodeProvider({
+      name: "opencode-zen",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/v1",
+      model: "claude-sonnet-5",
+    });
+    await provider.generate("sys", "hi", undefined, undefined, { tools: MUSIC_AGENT_TOOLS });
+    const body = calls[0]!.body as any;
+    expect(Array.isArray(body.tools)).toBe(true);
+    expect(body.tools[0].input_schema).toEqual(MUSIC_AGENT_TOOLS[0]!.parameters);
+  });
+
+  test("openai-responses: the /responses body includes `tools` in Responses shape", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "response.output_text.delta", delta: "hi" })]));
+    const provider = new OpencodeProvider({
+      name: "opencode-zen",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/v1",
+      model: "gpt-5.5",
+    });
+    await provider.generate("sys", "hi", undefined, undefined, { tools: MUSIC_AGENT_TOOLS });
+    const body = calls[0]!.body as any;
+    expect(Array.isArray(body.tools)).toBe(true);
+    expect(body.tools[0].name).toBe(MUSIC_AGENT_TOOLS[0]!.name);
+    expect(body.tools[0].strict).toBe(false);
+  });
+
+  test("google: the /models/<m> body includes `tools.functionDeclarations`", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "hi" }] } }] })]));
+    const provider = new OpencodeProvider({
+      name: "opencode-zen",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/v1",
+      model: "gemini-2.5-pro",
+    });
+    await provider.generate("sys", "hi", undefined, undefined, { tools: MUSIC_AGENT_TOOLS });
+    const body = calls[0]!.body as any;
+    expect(Array.isArray(body.tools)).toBe(true);
+    expect(body.tools[0].functionDeclarations.length).toBe(MUSIC_AGENT_TOOLS.length);
+  });
+
+  test("no tools passed → body has no `tools` field (legacy JSON mode intact)", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));
+    const provider = new OpencodeProvider({
+      name: "opencode-go",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      model: "glm-5.2",
+    });
+    await provider.generate("sys", "hi");
+    const body = calls[0]!.body as any;
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
   });
 });

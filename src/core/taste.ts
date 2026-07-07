@@ -120,6 +120,63 @@ export function tastePromptPrefix(taste: Taste): string {
   return `The user's accumulated music taste (use it to bias picks; explicit request constraints still win):\n${capped}`;
 }
 
+/**
+ * Compact taste-channel for the clarify step: ONLY artist names extracted from
+ * curated preferences and raw session lines. Cheap on tokens, surfaces just
+ * enough context to ground a clarifying question in the user's recent taste
+ * without shipping the full listening log. Returns "" when there is no taste
+ * yet (first run) or no recognizable artist names could be parsed.
+ */
+export function tasteForClarify(taste: Taste): string {
+  const seen = new Set<string>();
+  const names: string[] = [];
+
+  const pushClean = (raw: string) => {
+    const name = raw.trim();
+    if (name.length === 0) return;
+    // Normalize key for de-dup so Cyrillic vs Latin duplicates collapse only
+    // when literally identical. Keep original-script first occurrence.
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    names.push(name);
+  };
+
+  // Preferences bullets: tolerate "- likes: Artist X" / "- avoid: Artist Y" /
+  // flat "- Artist Z". We only pull the on-artist-on side; explicit "avoid"
+  // lines are skipped (they're a *negative* signal for clarify grounding).
+  for (const line of taste.preferences) {
+    const body = line.replace(/^-\s+/, "").trim();
+    if (/^(avoid|none of| never| skip)/i.test(body)) continue;
+    if (/^(likes?|enjoys?|wants?|prefers?|favorite|fav)\b\s*[:]?/i.test(body)) {
+      // "likes: A, B, C" → split
+      const after = body.replace(/^[A-Za-z]+\s*:?\s*/, "").trim();
+      for (const piece of after.split(/[,/;]|\band\b/)) pushClean(piece);
+      continue;
+    }
+    pushClean(body);
+  }
+
+  // Session lines: "- Artist – Title" (en dash U+2013 or hyphen-minus). Pull
+  // the left side; "(liked: …)" / "(meh)" / "(skip)" tags are dropped.
+  for (const session of taste.sessions) {
+    for (const line of session.lines) {
+      const body = line.replace(/^-\s+/, "");
+      // Skip annotation-only lines like "- (liked: 'banger')" — they have no
+      // artist/title pair. Detect by absence of any dash separator.
+      const m = body.match(/^(.+?)\s+[–-]\s+(.+)$/u);
+      if (!m) continue;
+      pushClean(m[1]!.replace(/\s*\([^)]*\)\s*$/, "").trim());
+    }
+  }
+
+  // Cap the surfaced list so it can't blow up the prompt on extensive taste.
+  if (names.length === 0) return "";
+  const cap = 25;
+  const list = names.slice(0, cap).join(", ");
+  return `Artists you've enjoyed before: ${list}`;
+}
+
 export const ROTATE_SYSTEM =
   'You compress listening-session logs into durable taste preferences. Given raw session lines, respond with ONLY 3-5 short bullets, one per line, each starting with "- ", capturing likes (artists, styles) and things to avoid. No prose, no headings.';
 

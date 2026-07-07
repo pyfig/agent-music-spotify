@@ -1,5 +1,5 @@
 import type { Progress } from "../core/generate-playlist";
-import { theme } from "./theme";
+import { SPINNER, theme } from "./theme";
 
 interface StatusBarProps {
   model: string;
@@ -17,7 +17,6 @@ interface StatusBarProps {
   muted?: boolean;
 }
 
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const BAR_WIDTH = 10;
 
 function progressBar(current: number, total: number): string {
@@ -37,6 +36,10 @@ function progressLabel(progress: Progress, tokenCount: number): string {
       return "clarifying…";
     case "thinking":
       return `thinking ${tokenCount > 0 ? `n=${tokenCount}` : "…"}`;
+    case "tool": {
+      const name = progress.toolName ?? "";
+      return name.length > 0 ? `tool: ${name}` : "tool…";
+    }
     case "resolving": {
       const current = progress.current ?? 0;
       const total = progress.total ?? 0;
@@ -88,7 +91,7 @@ export function StatusBar({
           <text fg={theme.subtext}>
             {" "}
             {model} · {backendLabel}
-            {loading ? " · generating…" : " · /model · ⏎ play · q quit"}
+            {loading ? " · generating…" : " · /model · enter play · q quit"}
           </text>
           {!!excludedCount && !loading && !error ? (
             <text fg={theme.maroon}> · {excludedCount} excluded</text>

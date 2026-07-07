@@ -1,4 +1,4 @@
-import type { AgentProvider } from "../types";
+import type { AgentProvider, AgentResult } from "../types";
 
 export interface ClaudeCliConfig {
   model?: string;
@@ -23,7 +23,7 @@ export class ClaudeCliProvider implements AgentProvider {
     user: string,
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<AgentResult> {
     const args = [
       "claude",
       "-p",
@@ -75,6 +75,6 @@ export class ClaudeCliProvider implements AgentProvider {
     if (typeof result !== "string") {
       throw new Error("unexpected claude CLI JSON shape");
     }
-    return result;
+    return { text: result };
   }
 }

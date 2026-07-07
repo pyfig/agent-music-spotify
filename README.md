@@ -44,6 +44,7 @@ The built-in client ID is shared and its API quota can run out (you'll see a `42
 
 - `/` opens the command dropdown — arrows navigate, **Tab** completes, **Enter** runs:
   - `/model` — switch AI provider/model
+  - `/settings` — configure provider keys, models, base URLs
   - `/random` — let the model pick a genre
   - `/save` — save the current track list as a playlist
   - `/clientid` — set your own Spotify app client ID
@@ -71,24 +72,60 @@ Backends without remote playlists queue the resolved track list into the local m
 
 ## Taste memory
 
-Generated sessions and `/like`d tracks accumulate in `.commandcode/taste/taste.md` and bias future playlists. Raw sessions are capped at 10 — older ones get summarized into a compact `Preferences` block automatically.
+Generated sessions and `/like`d tracks accumulate in `.commandcode/taste/taste.md` and bias future playlists. Raw sessions are capped at 10 — older ones get summarized into a compact `Preferences` block automatically. Artist names extracted from preferences + sessions are also surfaced to the agent's `clarify` tool so disambiguating questions stay grounded in your prior taste.
+
+## Agent loop
+
+API providers (`openai`, `opencode`, `ollama` with a tool-capable model) drive a multi-turn agent loop instead of a single prompt→JSON shot. The model gets tools (`searchTrack`, `searchArtist`, `getArtistTopTracks`, `clarify`, `finalize_playlist`), investigates the active music backend, asks at most one clarifying question through the existing ClarifyPrompt UI, then commits the playlist via the `finalize_playlist` tool. The loop is bounded — at most 8 iterations, then it errors. Models that silently drop the tools (older Ollama backends) fall through to the JSON-in-text fallback, so legacy flow still works.
+
+Reasoning deltas (o-series `reasoning_content`, Anthropic `thinking_delta`, Gemini 2.5 `thought`, Responses `response.reasoning.delta`, Ollama `message.thinking`) stream live into a column drawn beside the spinning donut while the agent thinks — see `DonutAnimation` + `ReasoningPane`.
 
 ## Config
 
-Optional overrides — env vars (`MUSIC_BACKEND`, `SPOTIFY_CLIENT_ID`, `SOUNDCLOUD_CLIENT_ID`, `DEFAULT_PROVIDER`, `OLLAMA_URL`, `OLLAMA_MODEL`) or `~/.config/spotify-harness-tui/config.json`:
+Optional overrides via env vars or `~/.config/spotify-harness-tui/config.json` (env > file > default). All keys are editable in-app via `/settings`.
+
+| Env var | Config key | Default | Purpose |
+|---|---|---|---|
+| `MUSIC_BACKEND` | `musicBackend` | `spotify` | `spotify` · `soundcloud` · `youtube-music` |
+| `SPOTIFY_CLIENT_ID` | `spotifyClientId` | built-in shared | Spotify app client ID (32 hex) |
+| `SOUNDCLOUD_CLIENT_ID` | `soundcloudClientId` | auto-scraped | SoundCloud api-v2 client_id |
+| `DEFAULT_PROVIDER` | `defaultProvider` | `claude-cli` | agent provider (see below) |
+| `OLLAMA_URL` | `ollamaUrl` | `http://127.0.0.1:11434` | Ollama daemon URL |
+| `OLLAMA_MODEL` | `ollamaModel` | `llama3` | Ollama model |
+| `CLAUDE_MODEL` | `claudeModel` | `sonnet` | Claude CLI model alias |
+| `CLAUDE_EFFORT` | `claudeEffort` | `low` | Claude reasoning effort |
+| `CLAUDE_SYSTEM_PROMPT` | `customSystemPrompt` | `""` | override the system prompt |
+| `OPENCODE_ZEN_API_KEY` | `opencodeZenApiKey` | `""` | opencode Zen tier key |
+| `OPENCODE_ZEN_BASE_URL` | `opencodeZenBaseUrl` | `https://opencode.ai/zen/v1` | Zen base URL |
+| `OPENCODE_ZEN_MODEL` | `opencodeZenModel` | `claude-sonnet-5` | Zen model |
+| `OPENCODE_GO_API_KEY` | `opencodeGoApiKey` | `""` | opencode Go tier key |
+| `OPENCODE_GO_BASE_URL` | `opencodeGoBaseUrl` | `https://opencode.ai/zen/go/v1` | Go base URL |
+| `OPENCODE_GO_MODEL` | `opencodeGoModel` | `glm-5.2` | Go model |
+| `OPENAI_AUTH_MODE` | `openaiAuthMode` | auto | `api` · `subs` (auto-picks from which credential is set) |
+| `OPENAI_API_KEY` | `openaiApiKey` | `""` | OpenAI platform key (`sk-…`) |
+| `OPENAI_SUBS_TOKEN` | `openaiSubsToken` | `""` | ChatGPT subscription bearer |
+| `OPENAI_BASE_URL` | `openaiBaseUrl` | `https://api.openai.com/v1` | chat completions base |
+| `OPENAI_MODEL` | `openaiModel` | `gpt-5` | OpenAI model id |
+| `VOLUME` | `volume` | `70` | playback volume 0-100 |
+
+Minimal `config.json`:
 
 ```json
 {
   "defaultProvider": "claude-cli",
-  "ollamaUrl": "http://127.0.0.1:11434",
-  "ollamaModel": "llama3"
+  "musicBackend": "spotify",
+  "volume": 70
 }
 ```
 
 ### Agent provider
 
+Cycle with **Ctrl+P** or `/model`, configure keys/models in `/settings`.
+
 - **claude-cli**: requires the `claude` CLI installed and authenticated on your machine.
 - **ollama**: requires a running Ollama daemon (`ollama serve`) with a pulled model.
+- **opencode: go / opencode: zen**: opencode hosted models — separate paid tiers, each with its own key + base URL.
+- **openai**: OpenAI Chat Completions, API key (`OPENAI_API_KEY`) or ChatGPT subscription token (`OPENAI_SUBS_TOKEN`).
 
 ## Run from source
 
@@ -99,7 +136,7 @@ bun run dev
 
 ## Scopes requested
 
-`playlist-modify-private`, `user-modify-playback-state`, `user-read-playback-state`, `user-library-modify`.
+`playlist-modify-public`, `playlist-modify-private`, `user-modify-playback-state`, `user-read-playback-state`, `user-library-modify`.
 
 ## Tests
 
@@ -109,4 +146,4 @@ bun test
 
 ## Not yet implemented
 
-codex CLI / OpenRouter agent providers, album art rendering, live playback progress, playlist editing after creation.
+OpenRouter agent provider, album art rendering, live playback progress, playlist editing after creation.

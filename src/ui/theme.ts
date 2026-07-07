@@ -21,6 +21,10 @@ export const theme = {
   surface1: "#313244", // selected row bg (ResultsList)
 } as const;
 
+// Braille spinner frames — shared by StatusBar and the reasoning transcript
+// header so the "thinking" motif stays consistent across the UI.
+export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+
 // Готовый пресет для <select> из @opentui/core.
 // Важно: никакого чёрного/тёмного фона — фон всегда прозрачный
 // (терминальный), подсветка выбранной строки только через fg-акцент.
