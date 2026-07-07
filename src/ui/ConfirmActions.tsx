@@ -46,7 +46,7 @@ interface ConfirmActionsProps {
 export function ConfirmActions({ focused, onAction, backend, remotePlaylists }: ConfirmActionsProps) {
   const OPTIONS = buildOptions(backend, remotePlaylists);
   return (
-    <box title="what next?" style={{ border: true, borderColor: theme.green, height: OPTIONS.length * 2 + 2, flexShrink: 0 }}>
+    <box title="what next?" style={{ border: true, borderColor: theme.muted, height: OPTIONS.length * 2 + 2, flexShrink: 0 }}>
       <select
         focused={focused}
         options={OPTIONS}

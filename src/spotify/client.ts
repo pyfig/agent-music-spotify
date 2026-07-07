@@ -248,7 +248,13 @@ export class SpotifyClient implements MusicProvider {
     await this.request("/me/player/play", { method: "PUT" });
   }
 
-  async getCurrentlyPlaying(): Promise<{ uri: string | null; isPlaying: boolean; volume?: number | null } | null> {
+  async getCurrentlyPlaying(): Promise<{
+    uri: string | null;
+    isPlaying: boolean;
+    volume?: number | null;
+    progressMs?: number | null;
+    durationMs?: number | null;
+  } | null> {
     const res = await fetch(`${API_BASE}/me/player`, {
       headers: { authorization: `Bearer ${this.accessToken}` },
     });
@@ -259,6 +265,8 @@ export class SpotifyClient implements MusicProvider {
       uri: data?.item?.uri ?? data?.context?.uri ?? null,
       isPlaying: data?.is_playing ?? false,
       volume: typeof data?.device?.volume_percent === "number" ? data.device.volume_percent : null,
+      progressMs: typeof data?.progress_ms === "number" ? data.progress_ms : null,
+      durationMs: typeof data?.item?.duration_ms === "number" ? data.item.duration_ms : null,
     };
   }
 

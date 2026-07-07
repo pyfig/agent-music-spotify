@@ -10,7 +10,9 @@ interface PromptInputProps {
 
 export function PromptInput({ placeholder, value, onChange, onSubmit, focused }: PromptInputProps) {
   return (
-    <box style={{ border: true, borderColor: theme.muted, height: 3, flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
+    // Focused input brightens its border one step so the active surface is
+    // visible when focus moves elsewhere (e.g. into the confirm menu).
+    <box style={{ border: true, borderColor: focused ? theme.subtext : theme.muted, height: 3, flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
       <input
         placeholder={placeholder}
         placeholderColor={theme.muted}
