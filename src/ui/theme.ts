@@ -25,6 +25,21 @@ export const theme = {
 // header so the "thinking" motif stays consistent across the UI.
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
+// Единый рендер ━─ баров: filled/rest раздельно, чтобы красить их разными
+// цветами (accent vs muted) — целиком accent-бар читается как 100% при любом
+// реальном значении.
+export function barParts(ratio: number, width: number): { filled: string; rest: string } {
+  const r = Math.max(0, Math.min(1, ratio));
+  const n = Math.round(r * width);
+  return { filled: "━".repeat(n), rest: "─".repeat(width - n) };
+}
+
+// Обрезка длинных лейблов с многоточием вместо flexbox hard-clip посреди
+// слова (model id, now-playing).
+export function truncateLabel(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, Math.max(0, max - 1))}…`;
+}
+
 // Готовый пресет для <select> из @opentui/core.
 // Важно: никакого чёрного/тёмного фона — фон всегда прозрачный
 // (терминальный), подсветка выбранной строки только через fg-акцент.

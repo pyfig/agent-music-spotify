@@ -1,5 +1,5 @@
 import type { Progress } from "../core/generate-playlist";
-import { SPINNER, theme } from "./theme";
+import { barParts, SPINNER, theme, truncateLabel } from "./theme";
 
 interface StatusBarProps {
   model: string;
@@ -22,21 +22,11 @@ const BAR_WIDTH = 10;
 // Long provider:model labels (e.g. "opencode-go:deepseek-v4-flash") must not
 // push the backend indicator and key hints off the row — truncate with an
 // ellipsis instead of letting flexbox hard-clip mid-word.
-const MODEL_MAX = 24;
-
-function truncateLabel(s: string, max = MODEL_MAX): string {
-  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
-}
+const MODEL_MAX = 32;
 
 function progressBar(current: number, total: number): string {
-  const filled = total > 0 ? Math.round((current / total) * BAR_WIDTH) : 0;
-  return "━".repeat(filled) + "─".repeat(BAR_WIDTH - filled);
-}
-
-function volumeBar(pct: number): string {
-  const v = Math.max(0, Math.min(100, Math.round(pct)));
-  const filled = Math.round((v / 100) * BAR_WIDTH);
-  return "━".repeat(filled) + "─".repeat(BAR_WIDTH - filled);
+  const { filled, rest } = barParts(total > 0 ? current / total : 0, BAR_WIDTH);
+  return filled + rest;
 }
 
 function progressLabel(progress: Progress, tokenCount: number): string {
@@ -78,14 +68,20 @@ export function StatusBar({
   volume = null,
   muted = false,
 }: StatusBarProps) {
-  const backendLabel = `♪ ${backend} ${authed ? "✓" : "—"}`;
+  // Backend + model on one line — both are environment identity, and merging
+  // them frees the third footer row that model used to occupy in App.
+  // During generation the right cluster (spinner · elapsed · vol) needs the
+  // width, and flexbox would hard-clip the model mid-word — drop it then.
+  const backendLabel = loading
+    ? `♪ ${backend} ${authed ? "✓" : "—"}`
+    : `♪ ${backend} ${authed ? "✓" : "—"} · ${truncateLabel(model, MODEL_MAX)}`;
   return (
     <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
       {error ? (
         <text fg={theme.red}> {error}</text>
       ) : loading && progress ? (
         <>
-          {/* Left: backend identity (model lives on its own row above/below). */}
+          {/* Left: backend + model identity. */}
           <box style={{ flexDirection: "row", flexShrink: 1, overflow: "hidden" }}>
             <text fg={theme.subtext}>
               {" "}
@@ -106,7 +102,8 @@ export function StatusBar({
             ) : volume !== null ? (
               <text>
                 <span fg={theme.subtext}> · vol </span>
-                <span fg={theme.accent}>{volumeBar(volume)}</span>
+                <span fg={theme.accent}>{barParts(volume / 100, BAR_WIDTH).filled}</span>
+                <span fg={theme.muted}>{barParts(volume / 100, BAR_WIDTH).rest}</span>
                 <span fg={theme.subtext}> {volume}%</span>
               </text>
             ) : null}
@@ -114,9 +111,7 @@ export function StatusBar({
         </>
       ) : (
         <>
-          {/* Left: backend identity — model lives in its own row above (see App),
-              so it doesn't share the line with hints/vol and stop competing
-              for attention with the spinner during generation. */}
+          {/* Left: backend + model identity. */}
           <box style={{ flexDirection: "row", flexShrink: 1, overflow: "hidden" }}>
             <text fg={theme.subtext}>
               {" "}
@@ -129,18 +124,16 @@ export function StatusBar({
           </box>
           {/* Right: hints + volume — keeps its width so hints never get clipped. */}
           <box style={{ flexDirection: "row", flexShrink: 0, flexGrow: 1, justifyContent: "flex-end" }}>
-            {!loading && (
-              <text>
-                <span fg={theme.subtext}>/</span>
-                <span fg={theme.muted}> commands</span>
-              </text>
-            )}
+            {/* "/ commands" hint removed — the input placeholder already says
+                "(/ for commands)" one row above; two hints for the same key
+                on adjacent lines is noise. */}
             {muted ? (
-              <text fg={theme.maroon}> · 🔇 muted</text>
+              <text fg={theme.maroon}> 🔇 muted</text>
             ) : volume !== null ? (
               <text>
-                <span fg={theme.subtext}> · vol </span>
-                <span fg={theme.accent}>{volumeBar(volume)}</span>
+                <span fg={theme.subtext}> vol </span>
+                <span fg={theme.accent}>{barParts(volume / 100, BAR_WIDTH).filled}</span>
+                <span fg={theme.muted}>{barParts(volume / 100, BAR_WIDTH).rest}</span>
                 <span fg={theme.subtext}> {volume}%</span>
               </text>
             ) : null}

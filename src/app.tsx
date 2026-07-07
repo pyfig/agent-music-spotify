@@ -63,7 +63,7 @@ import { SystemPromptPrompt } from "./ui/SystemPromptPrompt";
 import { SettingsScreen } from "./ui/SettingsScreen";
 import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
-import { theme } from "./ui/theme";
+import { barParts, theme, truncateLabel } from "./ui/theme";
 import { reduceEvents } from "./ui/reasoning";
 import type { ScrollBoxRenderable } from "@opentui/core";
 
@@ -82,10 +82,9 @@ function fmtTime(ms: number): string {
 const TRACK_BAR_WIDTH = 20;
 
 /** Same ━─ glyphs as the volume bar so both bars read as one system. */
-function trackBar(positionMs: number, durationMs: number): string {
-  const ratio = durationMs > 0 ? Math.max(0, Math.min(1, positionMs / durationMs)) : 0;
-  const filled = Math.round(ratio * TRACK_BAR_WIDTH);
-  return "━".repeat(filled) + "─".repeat(TRACK_BAR_WIDTH - filled);
+function trackBar(positionMs: number, durationMs: number): { filled: string; rest: string } {
+  const ratio = durationMs > 0 ? positionMs / durationMs : 0;
+  return barParts(ratio, TRACK_BAR_WIDTH);
 }
 
 export function App() {
@@ -1479,14 +1478,19 @@ export function App() {
                   <box style={{ flexDirection: "row", flexGrow: 1, flexShrink: 1, overflow: "hidden" }}>
                     <text>
                       <span fg={theme.subtext}> {isPlaying ? "▶" : "⏸"} </span>
-                      <span fg={theme.muted}>{nowPlaying}</span>
+                      {/* Ellipsis-truncate instead of letting flexbox hard-clip
+                          mid-word; timer cluster on the right is ~36 cols. */}
+                      <span fg={theme.muted}>
+                        {truncateLabel(nowPlaying, Math.max(10, width - (trackPos && trackDurationMs ? 40 : 5)))}
+                      </span>
                     </text>
                   </box>
                   {trackPos && trackDurationMs ? (
                     <text fg={theme.subtext}>
                       {" "}
                       {fmtTime(trackPos.positionMs)}{" "}
-                      <span fg={theme.accent}>{trackBar(trackPos.positionMs, trackDurationMs)}</span>{" "}
+                      <span fg={theme.accent}>{trackBar(trackPos.positionMs, trackDurationMs).filled}</span>
+                      <span fg={theme.muted}>{trackBar(trackPos.positionMs, trackDurationMs).rest}</span>{" "}
                       {fmtTime(trackDurationMs)}
                     </text>
                   ) : null}
@@ -1512,14 +1516,7 @@ export function App() {
                 volume={volume}
                 muted={mutedVolume !== null}
               />
-              {/* Model on its own row below the status bar — keeps the backend
-                  indicator (`♪ spotify ✓`) above it and stops long model
-                  labels from competing with hints/volume on the status row. */}
-              {!loading && !connecting ? (
-                <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
-                  <text fg={theme.subtext}> {modelLabel}</text>
-                </box>
-              ) : null}
+              {/* Model rides the status bar's backend label — no separate row. */}
             </>
           )}
       </box>

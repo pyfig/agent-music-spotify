@@ -30,7 +30,8 @@ Discipline:
 - "artists" lists only artists the user EXPLICITLY named in the request (in their original script); "tracks" is the full ordered list.
 - If you call finalize_playlist, do not also emit a JSON blob in the text answer — finalize_playlist IS the answer.
 - If a clarify call returns an error, retry it ONCE with "question" as a plain string and "options" as a plain array of exactly 3 strings.
-- Keep research lean: at most 5 tool calls total before finalize_playlist. Batch searches when possible; finalize as soon as you have a solid tracklist.`;
+- Keep research lean: at most 5 tool calls total before finalize_playlist. Batch searches when possible; finalize as soon as you have a solid tracklist.
+- If the request includes a "Previous session's playlist" block, treat it as soft seed context: lean toward tracks that flow from that vibe, but the explicit new request wins on conflict. Never copy the prior list verbatim.`;
 
 /**
  * Agent system prompt with the current date appended. The model's training
@@ -82,8 +83,20 @@ export function clarifyUser(prompt: string): string {
   return `Request: ${prompt}`;
 }
 
-export function generatePlaylistUserWithAnswers(prompt: string, qa: ClarifyAnswer[]): string {
-  if (qa.length === 0) return generatePlaylistUser(prompt);
-  const answers = qa.map((a) => `- ${a.question} -> ${a.answer}`).join("\n");
-  return `Request: ${prompt}\n\nClarifications:\n${answers}`;
+export function generatePlaylistUserWithAnswers(
+  prompt: string,
+  qa: ClarifyAnswer[],
+  priorPlaylist?: string[],
+): string {
+  const parts: string[] = [`Request: ${prompt}`];
+  if (priorPlaylist && priorPlaylist.length > 0) {
+    parts.push(
+      `Previous session's playlist (use as soft seed context — lean toward tracks that flow from it, but the explicit new request wins on conflict):\n${priorPlaylist.join("\n")}`,
+    );
+  }
+  if (qa.length > 0) {
+    const answers = qa.map((a) => `- ${a.question} -> ${a.answer}`).join("\n");
+    parts.push(`Clarifications:\n${answers}`);
+  }
+  return parts.join("\n\n");
 }

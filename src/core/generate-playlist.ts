@@ -95,6 +95,9 @@ export interface ResolvePlaylistOptions {
   signal?: AbortSignal;
   /** Optional taste-memory block appended to the system prompt. */
   tasteContext?: string;
+  /** Optional "artist – title" lines from the previous session's playlist,
+   * injected into the user prompt as soft seed context. */
+  priorPlaylistContext?: string[];
   /** When the agent emits a clarify tool call, this hook resolves the answer. */
   onClarifyTool?: ClarifyTool;
 }
@@ -131,7 +134,7 @@ export async function resolvePlaylist(
   const baseSystem = tasteContext
     ? `${agentSystem}\n\n${tasteContext}`
     : agentSystem;
-  const user = generatePlaylistUserWithAnswers(prompt, qa);
+  const user = generatePlaylistUserWithAnswers(prompt, qa, opts.priorPlaylistContext);
 
   onProgress?.({ phase: "thinking" });
 

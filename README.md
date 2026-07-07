@@ -49,12 +49,13 @@ The built-in client ID is shared and its API quota can run out (you'll see a `42
   - `/save` — save the current track list as a playlist
   - `/clientid` — set your own Spotify app client ID
   - `/login` — reconnect Spotify
+  - `/effort` — set Claude reasoning effort (low · medium · high · none)
   - `/like [comment]` — remember the current track in taste memory
   - `/memory` — show saved taste memory
   - `/forget` — clear taste memory
   - `/quit` — exit
-- Arrows — move selection in results; **Enter** on empty input — play the selected track (Spotify backend needs an open Spotify app on any device; other backends play locally via mpv).
-- **Ctrl+P** — cycle agent provider. **Ctrl+B** — switch music backend. **Esc Esc** — cancel generation. **Ctrl+C** — quit.
+- Arrows — move selection in results (or scroll the reasoning transcript while the agent is still thinking); **Enter** on empty input — play the selected track (Spotify backend needs an open Spotify app on any device; other backends play locally via mpv). The now-playing row shows `0:15 ━━━━━ 3:34` with `←/→` adjusting volume and `Ctrl+U` toggling mute.
+- **Ctrl+P** — cycle agent provider. **Ctrl+B** — switch music backend. **←/→** — volume. **Ctrl+U** — mute. **Esc Esc** — cancel generation. **Ctrl+C** — quit.
 
 ## Multiple backends
 
@@ -78,7 +79,7 @@ Generated sessions and `/like`d tracks accumulate in `.commandcode/taste/taste.m
 
 API providers (`openai`, `opencode`, `ollama` with a tool-capable model) drive a multi-turn agent loop instead of a single prompt→JSON shot. The model gets tools (`searchTrack`, `searchArtist`, `getArtistTopTracks`, `clarify`, `finalize_playlist`), investigates the active music backend, asks at most one clarifying question through the existing ClarifyPrompt UI, then commits the playlist via the `finalize_playlist` tool. The loop is bounded — at most 8 iterations, then it errors. Models that silently drop the tools (older Ollama backends) fall through to the JSON-in-text fallback, so legacy flow still works.
 
-Reasoning deltas (o-series `reasoning_content`, Anthropic `thinking_delta`, Gemini 2.5 `thought`, Responses `response.reasoning.delta`, Ollama `message.thinking`) stream live into a column drawn beside the spinning donut while the agent thinks — see `DonutAnimation` + `ReasoningPane`.
+While the agent thinks, a `ReasoningTranscript` panel takes over the list area as a chat-style log of reasoning/tool lines, pinned to the tail via `stickyScroll` — it disengages when you scroll up with arrows to read earlier reasoning and re-engages once you reach the bottom again. The status bar shows `⠋ thinking n=… · elapsed·s · vol` on the right while the backend identity (`♪ spotify ✓`) stays on the left.
 
 ## Config
 
@@ -146,4 +147,4 @@ bun test
 
 ## Not yet implemented
 
-OpenRouter agent provider, album art rendering, live playback progress, playlist editing after creation.
+OpenRouter agent provider, album art rendering, playlist editing after creation. Live playback progress is now shipped — the now-playing row renders `0:15 ━━━━━━━━━━━─ 3:34`.
