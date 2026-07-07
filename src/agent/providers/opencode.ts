@@ -1,4 +1,5 @@
-import type { AgentProvider } from "../types";
+import type { AgentProvider, AgentResult, GenerateOptions, ToolCall } from "../types";
+import { toolsForFamily } from "../tools";
 
 export interface OpencodeProviderConfig {
   /** Stable provider id surfaced in the UI & config: "opencode-go" | "opencode-zen". */
@@ -29,14 +30,14 @@ function sanitizeCredential(value: string): string {
   return v.replace(/^bearer\s+/i, "");
 }
 
-type ZenFamily = "anthropic" | "openai-responses" | "openai-compat" | "google";
+export type ZenFamily = "anthropic" | "openai-responses" | "openai-compat" | "google";
 
 /**
  * The opencode Zen gateway proxies to different upstream APIs depending on
  * model family — each needs a different endpoint + request/response shape.
  * See https://opencode.ai/zen for the model catalog.
  */
-function classifyModel(model: string): ZenFamily {
+export function classifyModel(model: string): ZenFamily {
   const m = model.toLowerCase();
   if (m.startsWith("claude") || m.startsWith("qwen") || m.startsWith("minimax")) return "anthropic";
   if (m.startsWith("gpt-5")) return "openai-responses";
@@ -95,7 +96,8 @@ export class OpencodeProvider implements AgentProvider {
     user: string,
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
-  ): Promise<string> {
+    opts?: GenerateOptions,
+  ): Promise<AgentResult> {
     if (!this.apiKey) {
       throw new Error(
         `opencode provider "${this.name}" requires OPENCODE_API_KEY to be set`,
@@ -113,6 +115,7 @@ export class OpencodeProvider implements AgentProvider {
       authorization: `Bearer ${this.apiKey}`,
     };
     const label = `opencode ${this.name}`;
+    const tools = opts?.tools?.length ? toolsForFamily(family, opts.tools) : undefined;
 
     switch (family) {
       case "anthropic": {
@@ -126,12 +129,13 @@ export class OpencodeProvider implements AgentProvider {
             system,
             stream: true,
             messages: [{ role: "user", content: user }],
+            ...(tools ? { tools } : {}),
           }),
         });
         if (!res.ok || !res.body) {
           throw await this.requestFailed(res);
         }
-        return consumeAnthropicSseStream(res.body, onToken, label);
+        return consumeAnthropicSseStream(res.body, onToken, label, opts?.onReasoning, Boolean(tools));
       }
       case "openai-responses": {
         const res = await fetch(`${this.baseUrl}/responses`, {
@@ -143,12 +147,13 @@ export class OpencodeProvider implements AgentProvider {
             instructions: system,
             input: user,
             stream: true,
+            ...(tools ? { tools } : {}),
           }),
         });
         if (!res.ok || !res.body) {
           throw await this.requestFailed(res);
         }
-        return consumeResponsesSseStream(res.body, onToken, label);
+        return consumeResponsesSseStream(res.body, onToken, label, opts?.onReasoning, Boolean(tools));
       }
       case "google": {
         const res = await fetch(`${this.baseUrl}/models/${this.model}`, {
@@ -158,12 +163,13 @@ export class OpencodeProvider implements AgentProvider {
           body: JSON.stringify({
             contents: [{ role: "user", parts: [{ text: user }] }],
             systemInstruction: { parts: [{ text: system }] },
+            ...(tools ? { tools } : {}),
           }),
         });
         if (!res.ok || !res.body) {
           throw await this.requestFailed(res);
         }
-        return consumeGoogleSseStream(res.body, onToken, label);
+        return consumeGoogleSseStream(res.body, onToken, label, opts?.onReasoning, Boolean(tools));
       }
       case "openai-compat":
       default: {
@@ -178,12 +184,13 @@ export class OpencodeProvider implements AgentProvider {
               { role: "system", content: system },
               { role: "user", content: user },
             ],
+            ...(tools ? { tools, tool_choice: "auto" } : {}),
           }),
         });
         if (!res.ok || !res.body) {
           throw await this.requestFailed(res);
         }
-        return consumeSseStream(res.body, onToken, label);
+        return consumeSseStream(res.body, onToken, label, opts?.onReasoning, Boolean(tools));
       }
     }
   }
@@ -212,16 +219,41 @@ async function readSseEvents(
 }
 
 /**
+ * Turn the per-index accreted tool-call fragment map into `ToolCall[]`. Each
+ * entry's `args` is JSON-parsed; malformed JSON is fed through as `{_raw}` so
+ * the loop surfaces a tool-result error instead of dropping the call silently.
+ */
+function buildToolCalls(acc: Map<number, { id: string; name: string; args: string }>): ToolCall[] {
+  const out: ToolCall[] = [];
+  for (const [, v] of acc) {
+    let args: Record<string, unknown> = {};
+    try {
+      args = v.args.length ? JSON.parse(v.args) : {};
+    } catch {
+      args = { _raw: v.args };
+    }
+    out.push({ id: v.id, name: v.name, args });
+  }
+  return out;
+}
+
+/**
  * Parse a Server-Sent Events stream of OpenAI-shaped chat completion chunks.
- * Each `data:` line is JSON with `choices[0].delta.content` (string|undefined).
- * `data: [DONE]` ends the stream. Returns concatenated content.
+ * Each `data:` line is JSON with `choices[0].delta` carrying `content` (string
+ * text answer), `reasoning_content` (o-series reasoning → onReasoning), or
+ * `tool_calls` (delta-tool-call fragments accumulated into AgentResult.toolCalls).
+ * `data: [DONE]` ends the stream.
  */
 export async function consumeSseStream(
   body: ReadableStream<Uint8Array>,
   onToken?: (delta: string) => void,
   label = "provider",
-): Promise<string> {
+  onReasoning?: (delta: string) => void,
+  _withTools = false,
+): Promise<AgentResult> {
   let full = "";
+  const tcAcc = new Map<number, { id: string; name: string; args: string }>();
+  let sawReasoning = false;
   await readSseEvents(body, (raw) => {
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
@@ -230,10 +262,29 @@ export async function consumeSseStream(
       if (payload === "[DONE]") continue;
       try {
         const data = JSON.parse(payload) as any;
-        const delta = data?.choices?.[0]?.delta?.content;
-        if (typeof delta === "string" && delta.length > 0) {
-          full += delta;
-          onToken?.(delta);
+        const delta = data?.choices?.[0]?.delta;
+        if (!delta) continue;
+        if (typeof delta.content === "string" && delta.content.length > 0) {
+          full += delta.content;
+          onToken?.(delta.content);
+        }
+        if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+          sawReasoning = true;
+          onReasoning?.(delta.reasoning_content);
+        }
+        if (Array.isArray(delta.tool_calls)) {
+          for (const d of delta.tool_calls) {
+            const idx = typeof d?.index === "number" ? d.index : 0;
+            const prev = tcAcc.get(idx);
+            const name = d?.function?.name;
+            const id = d?.id ?? prev?.id ?? `call_${idx}`;
+            const args = d?.function?.arguments ?? "";
+            if (prev) {
+              prev.args += typeof args === "string" ? args : "";
+            } else if (typeof name === "string") {
+              tcAcc.set(idx, { id, name, args: typeof args === "string" ? args : "" });
+            }
+          }
         }
       } catch {
         // Skip malformed keepalive/fragment lines.
@@ -241,22 +292,36 @@ export async function consumeSseStream(
     }
   });
 
-  if (full.length === 0) {
+  const toolCalls = buildToolCalls(tcAcc);
+  if (full.length === 0 && toolCalls.length === 0 && !sawReasoning) {
     throw new Error(`unexpected ${label} response shape (no content)`);
   }
-  return full;
+  return { text: full, toolCalls: toolCalls.length > 0 ? toolCalls : undefined };
 }
 
 /**
- * Parse an Anthropic Messages API SSE stream: `content_block_delta` events
- * carry `delta.text`; stream ends at `message_stop`.
+ * Parse an Anthropic Messages API SSE stream:
+ *  - `content_block_start` with `type: "tool_use"` registers a new tool block
+ *  - `content_block_delta` with `delta.type: "text_delta"` → answer text
+ *  - `content_block_delta` with `delta.type: "thinking_delta"` → reasoning
+ *  - `content_block_delta` with `delta.type: "input_json_delta"` → tool args
+ *  - `content_block_stop` finalizes and dispatches the accumulated tool call
+ *  - `message_stop` ends the stream
  */
 async function consumeAnthropicSseStream(
   body: ReadableStream<Uint8Array>,
   onToken?: (delta: string) => void,
   label = "provider",
-): Promise<string> {
+  onReasoning?: (delta: string) => void,
+  _withTools = false,
+): Promise<AgentResult> {
   let full = "";
+  // content_block context keyed by Anthropic's `index`. A block is either a
+  // text block (no entry needed — text deltas go straight to `full`) or a
+  // tool_use block (entry carries id/name/accumulating JSON args).
+  const blocks = new Map<number, { kind: "tool_use"; id: string; name: string; args: string }>();
+  const toolCalls: ToolCall[] = [];
+  let sawReasoning = false;
   await readSseEvents(body, (raw) => {
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
@@ -265,12 +330,60 @@ async function consumeAnthropicSseStream(
       if (!payload || payload === "[DONE]") continue;
       try {
         const data = JSON.parse(payload) as any;
-        if (data?.type === "content_block_delta" && data?.delta?.type === "text_delta") {
-          const delta = data.delta.text;
-          if (typeof delta === "string" && delta.length > 0) {
-            full += delta;
-            onToken?.(delta);
+        switch (data?.type) {
+          case "content_block_start": {
+            const blk = data?.content_block;
+            const idx = data?.index ?? 0;
+            if (blk?.type === "tool_use") {
+              blocks.set(idx, {
+                kind: "tool_use",
+                id: blk.id ?? `call_${idx}`,
+                name: blk.name ?? "",
+                args: "",
+              });
+            }
+            break;
           }
+          case "content_block_delta": {
+            const delta = data?.delta;
+            if (delta?.type === "text_delta") {
+              const t = delta.text;
+              if (typeof t === "string" && t.length > 0) {
+                full += t;
+                onToken?.(t);
+              }
+            } else if (delta?.type === "thinking_delta") {
+              const t = delta.thinking;
+              if (typeof t === "string" && t.length > 0) {
+                sawReasoning = true;
+                onReasoning?.(t);
+              }
+            } else if (delta?.type === "input_json_delta") {
+              const idx = data?.index ?? 0;
+              const b = blocks.get(idx);
+              if (b && typeof delta.partial_json === "string") {
+                b.args += delta.partial_json;
+              }
+            }
+            break;
+          }
+          case "content_block_stop": {
+            const idx = data?.index ?? 0;
+            const b = blocks.get(idx);
+            if (b) {
+              blocks.delete(idx);
+              let args: Record<string, unknown> = {};
+              try {
+                args = b.args.length ? JSON.parse(b.args) : {};
+              } catch {
+                args = { _raw: b.args };
+              }
+              toolCalls.push({ id: b.id, name: b.name, args });
+            }
+            break;
+          }
+          default:
+            break;
         }
       } catch {
         // Skip malformed keepalive/fragment lines.
@@ -278,22 +391,31 @@ async function consumeAnthropicSseStream(
     }
   });
 
-  if (full.length === 0) {
+  if (full.length === 0 && toolCalls.length === 0 && !sawReasoning) {
     throw new Error(`unexpected ${label} response shape (no content)`);
   }
-  return full;
+  return { text: full, toolCalls: toolCalls.length > 0 ? toolCalls : undefined };
 }
 
 /**
- * Parse an OpenAI Responses API SSE stream: `response.output_text.delta`
- * events carry the text chunk directly in `delta`.
+ * Parse an OpenAI Responses API SSE stream (gpt-5 family):
+ *  - `response.output_text.delta` → answer text (delta is a string)
+ *  - `response.reasoning.delta` (or `response.reasoning_summary_text.delta`) → reasoning
+ *  - `response.function_call.delta` → tool-call arg fragment (delta carries `name`, `arguments`, `item_id`, `id`)
+ *  - `response.completed` ends the stream
  */
 async function consumeResponsesSseStream(
   body: ReadableStream<Uint8Array>,
   onToken?: (delta: string) => void,
   label = "provider",
-): Promise<string> {
+  onReasoning?: (delta: string) => void,
+  _withTools = false,
+): Promise<AgentResult> {
   let full = "";
+  // Responses streams function-call args across multiple `response.function_call.delta`
+  // events keyed by `item_id`. First delta also carries `name`.
+  const fcAcc = new Map<string, { id: string; name: string; args: string }>();
+  let sawReasoning = false;
   await readSseEvents(body, (raw) => {
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
@@ -302,11 +424,131 @@ async function consumeResponsesSseStream(
       if (!payload || payload === "[DONE]") continue;
       try {
         const data = JSON.parse(payload) as any;
-        if (data?.type === "response.output_text.delta") {
-          const delta = data.delta;
-          if (typeof delta === "string" && delta.length > 0) {
-            full += delta;
-            onToken?.(delta);
+        switch (data?.type) {
+          case "response.output_text.delta": {
+            const d = data.delta;
+            if (typeof d === "string" && d.length > 0) {
+              full += d;
+              onToken?.(d);
+            }
+            break;
+          }
+          case "response.reasoning.delta":
+          case "response.reasoning_summary_text.delta": {
+            const d = data.delta;
+            const text = typeof d === "string" ? d : d?.text;
+            if (typeof text === "string" && text.length > 0) {
+              sawReasoning = true;
+              onReasoning?.(text);
+            }
+            break;
+          }
+          case "response.function_call.delta": {
+            const d = data.delta ?? {};
+            const itemId = d.item_id ?? d.id ?? `call_${fcAcc.size}`;
+            const prev = fcAcc.get(itemId);
+            const name = d.name ?? prev?.name ?? "";
+            const id = d.id ?? prev?.id ?? itemId;
+            const args = typeof d.arguments === "string" ? d.arguments : "";
+            if (prev) {
+              prev.args += args;
+            } else if (name) {
+              fcAcc.set(itemId, { id, name, args });
+            } else {
+              // No name yet and no prev — stash empty to fill in later.
+              fcAcc.set(itemId, { id, name, args });
+            }
+            break;
+          }
+          case "response.completed":
+          default:
+            break;
+        }
+      } catch {
+        // Skip malformed keepalive/fragment lines.
+      }
+    }
+  });
+
+  // Flatten the keyed-by-item_id accumulator into a positional array
+  // preserving insertion order.
+  const toolCalls: ToolCall[] = [];
+  for (const [, v] of fcAcc) {
+    let args: Record<string, unknown> = {};
+    try {
+      args = v.args.length ? JSON.parse(v.args) : {};
+    } catch {
+      args = { _raw: v.args };
+    }
+    toolCalls.push({ id: v.id, name: v.name, args });
+  }
+
+  if (full.length === 0 && toolCalls.length === 0 && !sawReasoning) {
+    throw new Error(`unexpected ${label} response shape (no content)`);
+  }
+  return { text: full, toolCalls: toolCalls.length > 0 ? toolCalls : undefined };
+}
+
+/**
+ * Parse a Google generateContent SSE stream (Gemini):
+ *  - Each chunk → `candidates[0].content.parts[]`
+ *  - Part with `text` → answer text
+ *  - Part with `thought: true` (or `thoughtText`) → Gemini 2.5 reasoning
+ *  - Part with `functionCall: {name, args}` → non-streamed, complete tool call
+ *  - Gemini ships tool args already-assembled as a JSON object, no accretion needed.
+ */
+async function consumeGoogleSseStream(
+  body: ReadableStream<Uint8Array>,
+  onToken?: (delta: string) => void,
+  label = "provider",
+  onReasoning?: (delta: string) => void,
+  _withTools = false,
+): Promise<AgentResult> {
+  let full = "";
+  const toolCalls: ToolCall[] = [];
+  let sawReasoning = false;
+  // Gemini assigns explicit ids to multi-turn tool calls via `functionCall.id`.
+  // When absent, synthesize a positional id.
+  let callCounter = 0;
+  await readSseEvents(body, (raw) => {
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        const data = JSON.parse(payload) as any;
+        const parts: any[] | undefined = data?.candidates?.[0]?.content?.parts;
+        if (!Array.isArray(parts)) continue;
+        for (const part of parts) {
+          if (!part || typeof part !== "object") continue;
+          // Regular text answer.
+          if (typeof part.text === "string" && part.text.length > 0) {
+            // Gemini 2.5 reasoning parts are marked `thought: true` and may
+            // carry `text` too — discriminate on the flag first. The plain
+            // text-channel field is `text`; the alternate thought-carrier
+            // schema uses `thought: true` plus `text`. Either way, route the
+            // marked one to onReasoning and the rest to the answer stream.
+            if (part.thought === true) {
+              sawReasoning = true;
+              onReasoning?.(part.text);
+            } else {
+              full += part.text;
+              onToken?.(part.text);
+            }
+          }
+          // Some SDK/gateway variants ship thinking as `thoughtText`.
+          if (typeof part.thoughtText === "string" && part.thoughtText.length > 0) {
+            sawReasoning = true;
+            onReasoning?.(part.thoughtText);
+          }
+          // Tool call — delivered whole, not streamed.
+          if (part.functionCall && typeof part.functionCall === "object") {
+            const fc = part.functionCall;
+            const name = typeof fc.name === "string" ? fc.name : "";
+            const id = typeof fc.id === "string" ? fc.id : `call_${callCounter++}`;
+            const args = (fc.args && typeof fc.args === "object") ? fc.args as Record<string, unknown> : {};
+            toolCalls.push({ id, name, args });
           }
         }
       } catch {
@@ -315,43 +557,8 @@ async function consumeResponsesSseStream(
     }
   });
 
-  if (full.length === 0) {
+  if (full.length === 0 && toolCalls.length === 0 && !sawReasoning) {
     throw new Error(`unexpected ${label} response shape (no content)`);
   }
-  return full;
-}
-
-/**
- * Parse a Google generateContent SSE stream: each chunk carries
- * `candidates[0].content.parts[0].text`.
- */
-async function consumeGoogleSseStream(
-  body: ReadableStream<Uint8Array>,
-  onToken?: (delta: string) => void,
-  label = "provider",
-): Promise<string> {
-  let full = "";
-  await readSseEvents(body, (raw) => {
-    for (const line of raw.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith("data:")) continue;
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        const data = JSON.parse(payload) as any;
-        const delta = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (typeof delta === "string" && delta.length > 0) {
-          full += delta;
-          onToken?.(delta);
-        }
-      } catch {
-        // Skip malformed keepalive/fragment lines.
-      }
-    }
-  });
-
-  if (full.length === 0) {
-    throw new Error(`unexpected ${label} response shape (no content)`);
-  }
-  return full;
+  return { text: full, toolCalls: toolCalls.length > 0 ? toolCalls : undefined };
 }

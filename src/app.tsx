@@ -13,12 +13,13 @@ import { ClaudeCliProvider } from "./agent/providers/claude-cli";
 import { OllamaProvider, listOllamaModels } from "./agent/providers/ollama";
 import { OpencodeProvider } from "./agent/providers/opencode";
 import { OpenAIProvider } from "./agent/providers/openai";
-import type { AgentProvider } from "./agent/types";
+import type { AgentEvent, AgentProvider } from "./agent/types";
 import type { ClarifyQuestion } from "./agent/parse";
 import {
   generateRandomPlaylistUser,
   type ClarifyAnswer,
 } from "./agent/prompts";
+
 import {
   forceFreshLogin,
   getAccessToken,
@@ -37,12 +38,12 @@ import {
   rotate,
   ROTATE_SYSTEM,
   saveTaste,
+  tasteForClarify,
   tastePromptPrefix,
 } from "./core/taste";
 import type { MusicBackend, RemotePlaylist } from "./music/types";
 import { MusicBackendPicker } from "./ui/MusicBackendPicker";
 import {
-  clarify,
   resolvePlaylist,
   commitPlaylist,
   type ResolvedPlaylist,
@@ -63,6 +64,7 @@ import { SettingsScreen } from "./ui/SettingsScreen";
 import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
 import { theme } from "./ui/theme";
+import { reduceEvents } from "./ui/reasoning";
 
 type Screen = "loading" | "wizard" | "main";
 
@@ -125,6 +127,12 @@ export function App() {
   const [mutedVolume, setMutedVolume] = useState<number | null>(null);
   const [memoryText, setMemoryText] = useState<string | null>(null);
   const [forgetOpen, setForgetOpen] = useState(false);
+  /** Ordered reasoning/tool transcript, rendered as a chat-style thinking log. */
+  const [events, setEvents] = useState<AgentEvent[]>([]);
+  /** Deferred resolver for the in-loop `clarify` tool: when the agent calls
+   * clarify, the loop awaits this promise; we resolve it from `advanceClarify`
+   * once the user picks an option / submits a custom answer. */
+  const clarifyResolverRef = useRef<((answer: string) => void) | null>(null);
   const [toast, setToast] = useState<{ msg: string; ts: number } | null>(null);
   function show(msg: string) {
     setToast({ msg, ts: Date.now() });
@@ -420,6 +428,16 @@ export function App() {
       if (loading) {
         if (escArmed) {
           disarmEsc();
+          // If the agent loop is parked on the deferred clarify tool call,
+          // aborting the controller alone won't unblock it — the loop is
+          // awaiting a Promise that only `advanceClarify` resolves. Drain it
+          // with an empty answer so dispatchTool returns; the loop's next
+          // iteration will see `signal.aborted` and throw, releasing loading.
+          const drain = clarifyResolverRef.current as ((answer: string) => void) | null;
+          if (drain) {
+            clarifyResolverRef.current = null;
+            drain("");
+          }
           abortRef.current?.abort();
         } else {
           setEscArmed(true);
@@ -442,11 +460,13 @@ export function App() {
       await quickToggleModel();
       return;
     }
-    // Volume: ←/→ step by 5%, M toggles mute (restores pre-mute level). These
-    // are printable/navigation keys the focused <input> would also consume, so
-    // stop the event from reaching it — otherwise "m" gets typed while muting
-    // and ←/→ move the text cursor as well as the volume. Skipped while the
-    // slash menu is open so those keys navigate the menu / edit the query.
+    // Volume: ←/→ step by 5%, Ctrl+U toggles mute (restores pre-mute level).
+    // Mute lives on a ctrl combo because a bare printable key would steal the
+    // letter from the always-focused prompt input while typing track names.
+    // Arrow keys are navigation keys the focused <input> would also consume,
+    // so stop the event from reaching it — otherwise ←/→ move the text cursor
+    // as well as the volume. Skipped while the slash menu is open so those
+    // keys navigate the menu / edit the query.
     if (!slashMenuOpen && key.name === "left") {
       key.stopPropagation();
       key.preventDefault();
@@ -459,7 +479,7 @@ export function App() {
       await adjustVolume(5);
       return;
     }
-    if (!slashMenuOpen && key.name === "m" && !key.ctrl && !key.meta) {
+    if (key.ctrl && key.name === "u") {
       key.stopPropagation();
       key.preventDefault();
       await toggleMute();
@@ -702,25 +722,62 @@ export function App() {
     setTokenCount(0);
     setElapsed(0);
     setStartTime(Date.now());
+    setEvents([]);
+    // Clear the previous run's results so the reasoning transcript takes over
+    // the screen (it only renders when the track list is empty). Without this,
+    // a re-run leaves the stale list up and the thinking view never shows.
+    setResolved(null);
+    setAwaitingConfirm(false);
+    setCommittedPlaylist(null);
+    // If a stale resolver lingers from a cancelled run, drop it so the next
+    // clarify tool call installs a fresh one.
+    clarifyResolverRef.current = null;
     const controller = new AbortController();
     abortRef.current = controller;
     try {
       const music = await createMusicProvider(config);
       if (config.musicBackend === "spotify") setAuthed(true);
       const taste = await loadTaste();
+      // System-prompt taste prefix carries the full curated+raw digest; the
+      // clarify channel carries just artist names grounded in the user's
+      // prior taste (decision Q4: only names, not the whole file).
+      const tasteFull = tastePromptPrefix(taste) || undefined;
+      const tasteArtists = tasteForClarify(taste) || undefined;
+      // Agent-loop system prompt carries the full curated+raw taste digest; the
+      // taste-artists channel below is appended only when an artist-name list
+      // was extractable (decision Q4: clarify grounded in prior artist picks),
+      // and is used as additional prefix to ease clarify grounding without
+      // duplicating the entire taste file.
+      const tasteClarifyChannel = tasteArtists
+        ? `\n\n${tasteArtists}`
+        : "";
       const r = await resolvePlaylist(
         provider,
         music,
         prompt,
         qa,
-        (p) => {
-          setProgress(p);
-          // Retry after parse-fail restarts the token stream; count only the live attempt.
-          if (p.phase === "thinking") setTokenCount(0);
+        {
+          onProgress: (p) => {
+            setProgress(p);
+            // Retry after parse-fail restarts the token stream; count only the live attempt.
+            if (p.phase === "thinking") setTokenCount(0);
+          },
+          onToken: (delta) => setTokenCount((n) => n + delta.length),
+          onEvent: (e) => setEvents((prev) => reduceEvents(prev, e)),
+          signal: controller.signal,
+          tasteContext: (tasteFull ?? "") + tasteClarifyChannel || undefined,
+          onClarifyTool: async (question, options) => {
+            // Surface the question to the existing ClarifyPrompt UI; await the
+            // user's answer via a deferred resolver.
+            setClarifyQuestions([{ text: question, options }]);
+            setClarifyStepIndex(0);
+            setClarifyCustomMode(false);
+            setClarifyCustomText("");
+            return new Promise<string>((resolve) => {
+              clarifyResolverRef.current = resolve;
+            });
+          },
         },
-        (delta) => setTokenCount((n) => n + delta.length),
-        controller.signal,
-        tastePromptPrefix(taste) || undefined,
       );
       setResolved(r);
       setCommittedPlaylist(null);
@@ -729,7 +786,14 @@ export function App() {
       void recordTasteSession(r);
       return r;
     } catch (e) {
-      // User-initiated cancel is not an error.
+      // User-initiated cancel is not an error. But a stuck deferred clarify
+      // (cancelled mid-question) must be drained so a future generate call
+      // doesn't see a stale resolver.
+      const drain = clarifyResolverRef.current as ((answer: string) => void) | null;
+      if (drain) {
+        drain("");
+        clarifyResolverRef.current = null;
+      }
       if (!(
         controller.signal.aborted ||
         (e instanceof Error && e.name === "AbortError")
@@ -759,7 +823,7 @@ export function App() {
         lines: r.resolved.map((t) => `- ${t.artist} – ${t.title}`),
       });
       if (needsRotation(taste) && provider) {
-        taste = await rotate(taste, (raw) => provider.generate(ROTATE_SYSTEM, raw)).catch(
+        taste = await rotate(taste, (raw) => provider.generate(ROTATE_SYSTEM, raw).then((r) => r.text)).catch(
           () => taste,
         );
       }
@@ -771,21 +835,19 @@ export function App() {
 
   function advanceClarify(answer: string) {
     if (!clarifyQuestions) return;
-    const q = clarifyQuestions[clarifyStepIndex];
-    if (!q) return;
-    const newAnswers = [...clarifyAnswers, { question: q.text, answer }];
-    const nextIndex = clarifyStepIndex + 1;
+    // Agent loop drives clarify through the `clarify` tool — one question per
+    // call. The deferred resolver installed by `runResolve`'s `onClarifyTool`
+    // hook is held by `clarifyResolverRef`. Resolving it unblocks the loop and
+    // lets the model continue with the user's answer. Multi-question clarify
+    // from a single `clarify` call is explicitly out of scope (loop decides).
+    const resolver = clarifyResolverRef.current;
     setClarifyCustomMode(false);
     setClarifyCustomText("");
-    if (nextIndex >= clarifyQuestions.length) {
-      const prompt = pendingBasePrompt;
-      setClarifyQuestions(null);
-      setClarifyStepIndex(0);
-      setClarifyAnswers(newAnswers);
-      if (prompt) void runResolve(prompt, newAnswers);
-    } else {
-      setClarifyAnswers(newAnswers);
-      setClarifyStepIndex(nextIndex);
+    setClarifyQuestions(null);
+    setClarifyStepIndex(0);
+    if (resolver) {
+      clarifyResolverRef.current = null;
+      resolver(answer);
     }
   }
 
@@ -974,39 +1036,11 @@ export function App() {
     setError(undefined);
     setInput("");
     setElapsed(0);
-    setStartTime(Date.now());
-    setLoading(true);
-    setProgress({ phase: "clarifying" });
-    const controller = new AbortController();
-    abortRef.current = controller;
-    let questions: ClarifyQuestion[] = [];
-    try {
-      const rec = await clarify(provider, trimmed, controller.signal);
-      questions = rec.questions;
-    } catch (e) {
-      if (
-        controller.signal.aborted ||
-        (e instanceof Error && e.name === "AbortError")
-      ) {
-        abortRef.current = null;
-        setLoading(false);
-        setProgress(null);
-        return;
-      }
-      // Clarify step is best-effort — fall back to generating straight away.
-      questions = [];
-    }
-    abortRef.current = null;
-    setLoading(false);
-    setProgress(null);
-    if (questions.length === 0) {
-      await runResolve(trimmed, []);
-      return;
-    }
-    setPendingBasePrompt(trimmed);
-    setClarifyQuestions(questions);
-    setClarifyStepIndex(0);
-    setClarifyAnswers([]);
+    setEvents([]);
+    // Agent loop drives clarify through the `clarify` tool — no separate
+    // pre-step. runResolve sets progress and aborts itself; the loop surfaces
+    // questions to ClarifyPrompt via the deferred resolver in `advanceClarify`.
+    await runResolve(trimmed, []);
   }
 
   async function handlePlay() {
@@ -1293,9 +1327,16 @@ export function App() {
                     currentlyPlayingUri={currentlyPlayingUri}
                     isPlaying={isPlaying}
                     loading={loading || connecting}
+                    events={events}
+                    spinnerFrame={spinnerFrame}
                   />
                   {awaitingConfirm && (
-                    <ConfirmActions focused onAction={handleConfirmAction} />
+                    <ConfirmActions
+                      focused
+                      onAction={handleConfirmAction}
+                      backend={config?.musicBackend}
+                      remotePlaylists={isSpotifyBackend}
+                    />
                   )}
                   {inputCluster}
                 </>

@@ -8,6 +8,7 @@ import {
   needsRotation,
   parseTaste,
   rotate,
+  tasteForClarify,
   tastePromptPrefix,
   type Taste,
 } from "../src/core/taste";
@@ -107,5 +108,68 @@ describe("taste prompt prefix", () => {
     expect(prefix).not.toContain("Artist6 –"); // 4th from the end, dropped
     expect(prefix).toContain("Artist9 –");
     expect(prefix).toContain("Artist7 –");
+  });
+});
+
+describe("tasteForClarify — artist-name channel for clarify step", () => {
+  test("empty taste yields '' (no clarify grounding)", () => {
+    expect(tasteForClarify(emptyTaste())).toBe("");
+  });
+
+  test("preferences bullets register artist names; 'avoid' lines are skipped", () => {
+    const taste: Taste = {
+      preferences: [
+        "- likes: Radiohead, Aphex Twin, Серебряная Свадьба",
+        "- avoid: country",
+        "- enjoys: synthpop",
+      ],
+      sessions: [],
+    };
+    const out = tasteForClarify(taste);
+    expect(out.startsWith("Artists you've enjoyed before:")).toBe(true);
+    expect(out).toContain("Radiohead");
+    expect(out).toContain("Aphex Twin");
+    expect(out).toContain("Серебряная Свадьба");
+    expect(out).toContain("synthpop");
+    // 'country' is the body of an "- avoid:" line and must be filtered out.
+    expect(out).not.toContain("country");
+  });
+
+  test("session lines '- Artist – Title' feed only the artist half", () => {
+    const taste: Taste = {
+      preferences: [],
+      sessions: [
+        {
+          header: "2026-07-05T14:00",
+          lines: ["- Carpenter Brut – Turbo Killer", "- Molchat Doma – Sudno"],
+        },
+      ],
+    };
+    const out = tasteForClarify(taste);
+    expect(out).toContain("Carpenter Brut");
+    expect(out).toContain("Molchat Doma");
+    expect(out).not.toContain("Turbo Killer");
+    expect(out).not.toContain("Sudno");
+  });
+
+  test("duplicate artists collapse (case-insensitive, first-script-form kept)", () => {
+    const taste: Taste = {
+      preferences: ["- likes: Muse"],
+      sessions: [{ header: "h", lines: ["- Muse – Uprising", "- muse – Hysteria"] }],
+    };
+    const out = tasteForClarify(taste);
+    const matches = out.match(/Muse/g);
+    expect(matches?.length).toBe(1);
+  });
+
+  test("large taste is capped at 25 listed names", () => {
+    const taste: Taste = { preferences: [], sessions: [] };
+    for (let i = 0; i < 50; i++) {
+      taste.sessions.push({ header: `h${i}`, lines: [`- Artist${i} – Track${i}`] });
+    }
+    const out = tasteForClarify(taste);
+    const listed = out.split(": ")[1]!.split(", ");
+    // 25 cap regardless of session count.
+    expect(listed.length).toBeLessThanOrEqual(25);
   });
 });

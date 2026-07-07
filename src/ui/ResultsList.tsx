@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
 import { useTerminalDimensions } from "@opentui/react";
 import type { ScrollBoxRenderable } from "@opentui/core";
+import type { AgentEvent } from "../agent/types";
 import { theme } from "./theme";
-import { DonutAnimation } from "./DonutAnimation";
+import { ReasoningTranscript } from "./ReasoningTranscript";
 
 export interface ResultLine {
   key: string;
@@ -18,10 +19,16 @@ interface ResultsListProps {
   currentlyPlayingUri?: string | null;
   isPlaying?: boolean;
   loading?: boolean;
+  /** Ordered reasoning/tool transcript — rendered as a chat log while the agent
+   * thinks (no resolved tracks yet), and collapsed to a summary line above the
+   * resolved list once tracks arrive. */
+  events?: AgentEvent[];
+  /** Braille spinner frame for the transcript header glyph. */
+  spinnerFrame?: number;
 }
 
-export function ResultsList({ title, lines, selectedIndex, currentlyPlayingUri, isPlaying, loading }: ResultsListProps) {
-  const { width, height } = useTerminalDimensions();
+export function ResultsList({ title, lines, selectedIndex, currentlyPlayingUri, isPlaying, loading, events = [], spinnerFrame }: ResultsListProps) {
+  const { height } = useTerminalDimensions();
   const scrollRef = useRef<ScrollBoxRenderable>(null);
 
   useEffect(() => {
@@ -43,19 +50,7 @@ export function ResultsList({ title, lines, selectedIndex, currentlyPlayingUri, 
 
   if (lines.length === 0) {
     if (loading) {
-      const dw = Math.min(64, Math.max(28, Math.floor(width * 0.6)));
-      const dh = Math.min(18, Math.max(8, maxHeight));
-      return (
-        <box
-          style={{
-            flexGrow: 1,
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <DonutAnimation width={dw} height={dh} />
-        </box>
-      );
+      return <ReasoningTranscript events={events} spinnerFrame={spinnerFrame} />;
     }
     return (
       <box style={{ flexGrow: 1, alignItems: "center", justifyContent: "center" }}>
@@ -65,6 +60,7 @@ export function ResultsList({ title, lines, selectedIndex, currentlyPlayingUri, 
   }
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minHeight: 5, maxHeight }}>
+      {events.length > 0 && <ReasoningTranscript events={events} collapsed />}
       {title && <text fg={theme.accent}> {title}</text>}
       <scrollbox
         ref={scrollRef}

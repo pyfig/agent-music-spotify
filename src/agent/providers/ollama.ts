@@ -1,4 +1,5 @@
-import type { AgentProvider } from "../types";
+import type { AgentProvider, AgentResult, GenerateOptions, ToolCall } from "../types";
+import { toolsForOpenAIChat } from "../tools";
 
 export interface OllamaConfig {
   url: string;
@@ -18,7 +19,11 @@ export class OllamaProvider implements AgentProvider {
     user: string,
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
-  ): Promise<string> {
+    opts?: GenerateOptions,
+  ): Promise<AgentResult> {
+    // Ollama tool support is opt-in via `opts.tools`; old models ignore the
+    // field and emit plain JSON text — the loop's JSON fallback covers them.
+    const toolsPayload = opts?.tools?.length ? toolsForOpenAIChat(opts.tools) : undefined;
     const res = await fetch(`${this.config.url}/api/chat`, {
       method: "POST",
       signal,
@@ -31,6 +36,7 @@ export class OllamaProvider implements AgentProvider {
           { role: "system", content: system },
           { role: "user", content: user },
         ],
+        ...(toolsPayload ? { tools: toolsPayload } : {}),
       }),
     });
     if (!res.ok || !res.body) {
@@ -42,6 +48,11 @@ export class OllamaProvider implements AgentProvider {
     const decoder = new TextDecoder();
     let buffer = "";
     let full = "";
+    // tool_call accumulator: Ollama streams tool calls across multiple chunks;
+    // `message.tool_calls` may arrive partially keyed by index. We aggregate
+    // by index so an interleave with text deltas still assembles correctly.
+    const toolCallsByIndex = new Map<number, { id: string; name: string; argsJson: string }>();
+    let reasoningAcc = "";
     const consumeLine = (line: string) => {
       const trimmed = line.trim();
       if (!trimmed) return;
@@ -50,6 +61,36 @@ export class OllamaProvider implements AgentProvider {
       if (typeof delta === "string" && delta.length > 0) {
         full += delta;
         onToken?.(delta);
+      }
+      // Reasoning: some Ollama models (qwen3-thinking, deepseek-r1) emit a
+      // top-level `thinking` or `message.reasoning_content` field. Forward it
+      // without polluting the answer stream.
+      const reasoning = data?.message?.reasoning_content ?? data?.message?.thinking;
+      if (typeof reasoning === "string" && reasoning.length > 0) {
+        reasoningAcc += reasoning;
+        opts?.onReasoning?.(reasoning);
+      }
+      // Tool calls: Ollama returns `message.tool_calls: [{ function: { name,
+      // arguments (string|object) } }]`. `arguments` is sometimes a JSON string
+      // which we normalize to a parsed object in the returned `AgentResult`.
+      const toolCalls: any[] | undefined = data?.message?.tool_calls;
+      if (Array.isArray(toolCalls)) {
+        for (let i = 0; i < toolCalls.length; i++) {
+          const tc = toolCalls[i];
+          if (!tc) continue;
+          const name = tc?.function?.name ?? tc?.name;
+          if (typeof name !== "string") continue;
+          const id = tc?.id ?? `call_${i}`;
+          // `arguments` may be a JSON string (streamed delta) or an object.
+          const argRaw = tc?.function?.arguments ?? tc?.arguments;
+          const argsJson = typeof argRaw === "string" ? argRaw : JSON.stringify(argRaw ?? {});
+          const prev = toolCallsByIndex.get(i);
+          if (prev) {
+            prev.argsJson += argsJson;
+          } else {
+            toolCallsByIndex.set(i, { id, name, argsJson });
+          }
+        }
       }
     };
     while (true) {
@@ -64,10 +105,26 @@ export class OllamaProvider implements AgentProvider {
     }
     consumeLine(buffer);
 
-    if (full.length === 0) {
-      throw new Error("unexpected ollama response shape");
+    const toolCalls: ToolCall[] = [];
+    for (const [, v] of toolCallsByIndex) {
+      let args: Record<string, unknown> = {};
+      try {
+        args = v.argsJson.length ? JSON.parse(v.argsJson) : {};
+      } catch {
+        // Malformed args: pass through as a literal `_raw` so the loop can
+        // surface a tool-result error rather than silently dropping the call.
+        args = { _raw: v.argsJson };
+      }
+      toolCalls.push({ id: v.id, name: v.name, args });
     }
-    return full;
+
+    if (full.length === 0 && toolCalls.length === 0) {
+      // Empty reasoning-only turns are not an error — we'll let the loop decide.
+      if (reasoningAcc.length === 0) {
+        throw new Error("unexpected ollama response shape");
+      }
+    }
+    return { text: full, toolCalls: toolCalls.length > 0 ? toolCalls : undefined };
   }
 }
 
