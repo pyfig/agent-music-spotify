@@ -8,12 +8,17 @@ import { ReasoningTranscript } from "./ReasoningTranscript";
 export interface ResultLine {
   key: string;
   label: string;
+  /** When set, artist renders a step quieter than the title so the eye scans titles. */
+  artist?: string;
+  title?: string;
   uri?: string;
   resolved: boolean;
 }
 
 interface ResultsListProps {
   title?: string;
+  /** Track count rendered muted after the title so the name stays dominant. */
+  count?: number;
   lines: ResultLine[];
   selectedIndex: number;
   currentlyPlayingUri?: string | null;
@@ -27,7 +32,7 @@ interface ResultsListProps {
   spinnerFrame?: number;
 }
 
-export function ResultsList({ title, lines, selectedIndex, currentlyPlayingUri, isPlaying, loading, events = [], spinnerFrame }: ResultsListProps) {
+export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayingUri, isPlaying, loading, events = [], spinnerFrame }: ResultsListProps) {
   const { height } = useTerminalDimensions();
   const scrollRef = useRef<ScrollBoxRenderable>(null);
 
@@ -58,10 +63,22 @@ export function ResultsList({ title, lines, selectedIndex, currentlyPlayingUri, 
       </box>
     );
   }
+  // Track numbers right-align in a column sized to the largest index.
+  const indexWidth = String(lines.length).length;
+
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minHeight: 5, maxHeight }}>
       {events.length > 0 && <ReasoningTranscript events={events} collapsed />}
-      {title && <text fg={theme.accent}> {title}</text>}
+      {title && (
+        <box style={{ flexDirection: "row", flexShrink: 0 }}>
+          <text fg={theme.accent}> {title}</text>
+          {count !== undefined && (
+            <text fg={theme.muted}>
+              {" "}· {count} {count === 1 ? "track" : "tracks"}
+            </text>
+          )}
+        </box>
+      )}
       <scrollbox
         ref={scrollRef}
         style={{ flexGrow: 1 }}
@@ -72,29 +89,47 @@ export function ResultsList({ title, lines, selectedIndex, currentlyPlayingUri, 
       >
         {lines.map((line, i) => {
           const isCurrentlyPlaying = line.uri && currentlyPlayingUri === line.uri;
-          const icon = isCurrentlyPlaying ? (isPlaying ? " ▶ " : " ⏸ ") : i === selectedIndex ? " ❯ " : "   ";
-          const fgColor = isCurrentlyPlaying
+          const isSelected = i === selectedIndex;
+          const icon = isCurrentlyPlaying ? (isPlaying ? " ▶ " : " ⏸ ") : isSelected ? " ❯ " : "   ";
+          // Title carries the row's tone; artist sits a step quieter unless the
+          // row is playing (whole row green) or unresolved (whole row dimmed).
+          const titleFg = isCurrentlyPlaying
             ? theme.green
             : line.resolved
-              ? i === selectedIndex
+              ? isSelected
                 ? theme.fg
                 : theme.subtext
-              : theme.red;
-          const rowBg = i === selectedIndex ? theme.surface1 : undefined;
+              : theme.muted;
+          const artistFg = isCurrentlyPlaying ? theme.green : isSelected ? theme.subtext : theme.muted;
+          const rowBg = isSelected ? theme.surface1 : undefined;
+          const num = String(i + 1).padStart(indexWidth);
           return (
-            // Marker in a fixed column, label in its own flex column so wrapped
-            // continuation lines keep a hanging indent instead of hitting col 0.
+            // Marker + index in fixed columns, label in its own flex column so
+            // wrapped continuation lines keep a hanging indent.
             <box key={line.key} style={{ flexDirection: "row", backgroundColor: rowBg }}>
               <box style={{ width: 3, flexShrink: 0 }}>
-                <text fg={fgColor} bg={rowBg}>
+                <text fg={isCurrentlyPlaying ? theme.green : theme.accent} bg={rowBg}>
                   {icon}
                 </text>
               </box>
-              <box style={{ flexGrow: 1, flexShrink: 1 }}>
-                <text fg={fgColor} bg={rowBg} wrapMode="word">
-                  {line.label}
-                  {line.resolved ? "" : "  (not found)"}
+              <box style={{ width: indexWidth + 1, flexShrink: 0 }}>
+                <text fg={theme.muted} bg={rowBg}>
+                  {num}{" "}
                 </text>
+              </box>
+              <box style={{ flexGrow: 1, flexShrink: 1 }}>
+                {line.artist && line.title ? (
+                  <text bg={rowBg} wrapMode="word">
+                    <span fg={artistFg}>{line.artist} — </span>
+                    <span fg={titleFg}>{line.title}</span>
+                    {line.resolved ? "" : <span fg={theme.red}>  not found</span>}
+                  </text>
+                ) : (
+                  <text fg={titleFg} bg={rowBg} wrapMode="word">
+                    {line.label}
+                    {line.resolved ? "" : "  not found"}
+                  </text>
+                )}
               </box>
             </box>
           );

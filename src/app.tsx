@@ -68,6 +68,25 @@ import { reduceEvents } from "./ui/reasoning";
 
 type Screen = "loading" | "wizard" | "main";
 
+/** mm:ss (or h:mm:ss past an hour) for track times. */
+function fmtTime(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const s = totalSec % 60;
+  const m = Math.floor(totalSec / 60) % 60;
+  const h = Math.floor(totalSec / 3600);
+  const mmss = `${m}:${String(s).padStart(2, "0")}`;
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : mmss;
+}
+
+const TRACK_BAR_WIDTH = 20;
+
+/** Same ━─ glyphs as the volume bar so both bars read as one system. */
+function trackBar(positionMs: number, durationMs: number): string {
+  const ratio = durationMs > 0 ? Math.max(0, Math.min(1, positionMs / durationMs)) : 0;
+  const filled = Math.round(ratio * TRACK_BAR_WIDTH);
+  return "━".repeat(filled) + "─".repeat(TRACK_BAR_WIDTH - filled);
+}
+
 export function App() {
   const { width, height } = useTerminalDimensions();
   const [config, setConfig] = useState<Config | null>(null);
@@ -122,6 +141,8 @@ export function App() {
     null,
   );
   const [isPlaying, setIsPlaying] = useState(false);
+  // Track progress (ms); durationMs null = unknown → bar hidden.
+  const [trackPos, setTrackPos] = useState<{ positionMs: number; durationMs: number | null } | null>(null);
   const [volume, setVolume] = useState<number | null>(null);
   // Mute state: mutedVolume holds the pre-mute level so a second M restores it.
   const [mutedVolume, setMutedVolume] = useState<number | null>(null);
@@ -202,12 +223,20 @@ export function App() {
           setCurrentlyPlayingUri(state?.uri ?? null);
           setIsPlaying(state?.isPlaying ?? false);
           if (typeof state?.volume === "number") setVolume(state.volume);
+          setTrackPos(
+            state
+              ? { positionMs: state.progressMs ?? 0, durationMs: state.durationMs ?? null }
+              : null,
+          );
         } else {
           const state = await player.getCurrentlyPlaying();
           if (cancelled) return;
           setCurrentlyPlayingUri(state?.track?.uri ?? null);
           setIsPlaying(state?.isPlaying ?? false);
           if (typeof state?.volume === "number") setVolume(state.volume);
+          setTrackPos(
+            state ? { positionMs: state.positionMs, durationMs: state.durationMs } : null,
+          );
         }
       } catch {
         // ignore polling errors
@@ -291,12 +320,20 @@ export function App() {
 
   const lines: ResultLine[] = useMemo(() => {
     if (!resolved) return [];
-    return resolved.resolved.map((t, i) => ({
-      key: `r${i}`,
-      label: `${t.artist} — ${t.title}`,
-      uri: t.uri,
-      resolved: true,
-    }));
+    return resolved.resolved.map((t, i) => {
+      // SoundCloud/YT titles often embed the uploader ("artist — title");
+      // drop that prefix when it just repeats the artist we already show.
+      const dup = new RegExp(`^${t.artist.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*[—–-]\\s*`, "i");
+      const title = t.title.replace(dup, "");
+      return {
+        key: `r${i}`,
+        label: `${t.artist} — ${title}`,
+        artist: t.artist,
+        title,
+        uri: t.uri,
+        resolved: true,
+      };
+    });
   }, [resolved]);
 
   function cancelClarify() {
@@ -1131,6 +1168,7 @@ export function App() {
 
   const playingTrack = resolved?.resolved.find((t) => t.uri === currentlyPlayingUri);
   const nowPlaying = playingTrack ? `${playingTrack.artist} – ${playingTrack.title}` : null;
+  const trackDurationMs = trackPos?.durationMs ?? playingTrack?.durationMs ?? null;
   // Logo only before the first prompt; frees vertical space afterwards. Also
   // hidden on very short terminals so the input and menu stay on screen.
   const showLogo = (screen !== "main" || !hasInteracted) && height >= 12;
@@ -1138,7 +1176,7 @@ export function App() {
   const inputCluster = (
     <>
       <PromptInput
-        placeholder="describe an album… (type / for commands)"
+        placeholder="Search albums…  (/ for commands)"
         value={input}
         onChange={(v) => {
           setInput(v);
@@ -1317,11 +1355,8 @@ export function App() {
               {!centered && (
                 <>
                   <ResultsList
-                    title={
-                      resolved
-                        ? `${resolved.name} — ${resolved.resolved.length} tracks`
-                        : undefined
-                    }
+                    title={resolved ? resolved.name : undefined}
+                    count={resolved ? resolved.resolved.length : undefined}
                     lines={lines}
                     selectedIndex={selectedIndex}
                     currentlyPlayingUri={currentlyPlayingUri}
@@ -1343,10 +1378,20 @@ export function App() {
               )}
               {nowPlaying && !loading && !connecting ? (
                 <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
-                  <text fg={theme.accent}>
-                    {" "}
-                    {isPlaying ? "▶" : "⏸"} {nowPlaying}
-                  </text>
+                  <box style={{ flexDirection: "row", flexShrink: 1, overflow: "hidden" }}>
+                    <text>
+                      <span fg={theme.subtext}> {isPlaying ? "▶" : "⏸"} </span>
+                      <span fg={theme.muted}>{nowPlaying}</span>
+                    </text>
+                  </box>
+                  {trackPos && trackDurationMs ? (
+                    <text fg={theme.subtext}>
+                      {" "}
+                      {fmtTime(trackPos.positionMs)}{" "}
+                      <span fg={theme.accent}>{trackBar(trackPos.positionMs, trackDurationMs)}</span>{" "}
+                      {fmtTime(trackDurationMs)}
+                    </text>
+                  ) : null}
                 </box>
               ) : null}
               {toast && !loading && !connecting ? (

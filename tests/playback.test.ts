@@ -93,6 +93,7 @@ describe("PlayerController local playback", () => {
     await controller.queue([makeTrack(1)], makeLocalProvider());
     const state = await controller.getCurrentlyPlaying();
     expect(state?.positionMs).toBe(12500);
+    expect(state?.durationMs).toBe(200000);
   });
 
   test("stop kills mpv and clears state", async () => {

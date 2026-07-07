@@ -21,6 +21,7 @@ export interface PlayingState {
   track: Track | null;
   isPlaying: boolean;
   positionMs: number;
+  durationMs: number | null;
   volume: number | null;
 }
 
@@ -32,7 +33,13 @@ export interface RemotePlaybackClient {
   play(uri: string): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
-  getCurrentlyPlaying(): Promise<{ uri: string | null; isPlaying: boolean; volume?: number | null } | null>;
+  getCurrentlyPlaying(): Promise<{
+    uri: string | null;
+    isPlaying: boolean;
+    volume?: number | null;
+    progressMs?: number | null;
+    durationMs?: number | null;
+  } | null>;
   setVolume?(percent: number): Promise<void>;
 }
 
@@ -256,13 +263,17 @@ export class PlayerController {
       return {
         track: this.remoteTrack,
         isPlaying: state.isPlaying,
-        positionMs: 0,
+        positionMs: state.progressMs ?? 0,
+        durationMs: state.durationMs ?? this.remoteTrack?.durationMs ?? null,
         volume: state.volume ?? this.volume,
       };
     }
     const track = this.queueTracks[this.queueIndex];
     if (!this.mpv || !track) return null;
     const pos = (await this.mpv.send(["get_property", "time-pos"]).catch(() => 0)) as
+      | number
+      | null;
+    const dur = (await this.mpv.send(["get_property", "duration"]).catch(() => null)) as
       | number
       | null;
     const vol = (await this.mpv.send(["get_property", "volume"]).catch(() => null)) as
@@ -273,6 +284,8 @@ export class PlayerController {
       track,
       isPlaying: this.isPlayingLocal,
       positionMs: Math.round((pos ?? 0) * 1000),
+      durationMs:
+        typeof dur === "number" && dur > 0 ? Math.round(dur * 1000) : track.durationMs ?? null,
       volume: typeof vol === "number" ? clampVolume(vol) : this.volume,
     };
   }
