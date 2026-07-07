@@ -276,6 +276,139 @@ describe("OpencodeProvider tool-calling: opts.tools makes the request carry tool
     expect(body.tools[0].functionDeclarations.length).toBe(MUSIC_AGENT_TOOLS.length);
   });
 
+  test("openai-compat: opts.toolChoice forces the named function and overrides 'auto'", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));
+    const provider = new OpencodeProvider({
+      name: "opencode-go",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      model: "deepseek-v4-pro",
+    });
+    await provider.generate("sys", "hi", undefined, undefined, {
+      tools: MUSIC_AGENT_TOOLS,
+      toolChoice: { name: "clarify" },
+    });
+    const body = calls[0]!.body as any;
+    expect(body.tool_choice).toEqual({ type: "function", function: { name: "clarify" } });
+    expect(body.tool_choice).not.toBe("auto");
+  });
+
+  test("anthropic: opts.toolChoice becomes tool_choice {type:'tool', name}", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    const provider = new OpencodeProvider({
+      name: "opencode-zen",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/v1",
+      model: "claude-sonnet-5",
+    });
+    await provider.generate("sys", "hi", undefined, undefined, {
+      tools: MUSIC_AGENT_TOOLS,
+      toolChoice: { name: "clarify" },
+    });
+    const body = calls[0]!.body as any;
+    expect(body.tool_choice).toEqual({ type: "tool", name: "clarify" });
+  });
+
+  test("openai-responses: opts.toolChoice becomes tool_choice {type:'function', name}", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "response.output_text.delta", delta: "hi" })]));
+    const provider = new OpencodeProvider({
+      name: "opencode-zen",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/v1",
+      model: "gpt-5.5",
+    });
+    await provider.generate("sys", "hi", undefined, undefined, {
+      tools: MUSIC_AGENT_TOOLS,
+      toolChoice: { name: "clarify" },
+    });
+    const body = calls[0]!.body as any;
+    expect(body.tool_choice).toEqual({ type: "function", name: "clarify" });
+  });
+
+  test("google: opts.toolChoice becomes toolConfig ANY with allowedFunctionNames", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "hi" }] } }] })]));
+    const provider = new OpencodeProvider({
+      name: "opencode-zen",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/v1",
+      model: "gemini-2.5-pro",
+    });
+    await provider.generate("sys", "hi", undefined, undefined, {
+      tools: MUSIC_AGENT_TOOLS,
+      toolChoice: { name: "clarify" },
+    });
+    const body = calls[0]!.body as any;
+    expect(body.toolConfig).toEqual({
+      functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["clarify"] },
+    });
+  });
+
+  test("forced tool_choice rejected with 400 → retries once without forcing", async () => {
+    const bodies: any[] = [];
+    let call = 0;
+    globalThis.fetch = (async (_input: any, init: any) => {
+      bodies.push(JSON.parse(init.body));
+      if (call++ === 0) {
+        return new Response(JSON.stringify({ error: { message: "Upstream request failed" } }), { status: 400 });
+      }
+      return sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]);
+    }) as typeof fetch;
+    const provider = new OpencodeProvider({
+      name: "opencode-go",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      model: "deepseek-v4-pro",
+    });
+    const result = await provider.generate("sys", "hi", undefined, undefined, {
+      tools: MUSIC_AGENT_TOOLS,
+      toolChoice: { name: "clarify" },
+    });
+    expect(result.text).toBe("hi");
+    expect(bodies.length).toBe(2);
+    expect(bodies[0].tool_choice).toEqual({ type: "function", function: { name: "clarify" } });
+    expect(bodies[1].tool_choice).toBe("auto");
+  });
+
+  test("non-400 failure with forced tool_choice is not retried", async () => {
+    let calls = 0;
+    globalThis.fetch = (async (_input: any, _init: any) => {
+      calls++;
+      return new Response("boom", { status: 500 });
+    }) as typeof fetch;
+    const provider = new OpencodeProvider({
+      name: "opencode-go",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      model: "deepseek-v4-pro",
+    });
+    await expect(
+      provider.generate("sys", "hi", undefined, undefined, {
+        tools: MUSIC_AGENT_TOOLS,
+        toolChoice: { name: "clarify" },
+      }),
+    ).rejects.toThrow(/500/);
+    expect(calls).toBe(1);
+  });
+
+  test("opts.toolChoice without tools → nothing forced in the body", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));
+    const provider = new OpencodeProvider({
+      name: "opencode-go",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      model: "deepseek-v4-pro",
+    });
+    await provider.generate("sys", "hi", undefined, undefined, { toolChoice: { name: "clarify" } });
+    const body = calls[0]!.body as any;
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
+  });
+
   test("no tools passed → body has no `tools` field (legacy JSON mode intact)", async () => {
     const { calls, respond } = mockFetch();
     respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));

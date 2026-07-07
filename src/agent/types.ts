@@ -35,6 +35,9 @@ export interface GenerateOptions {
   tools?: ToolSpec[];
   /** Streaming reasoning/thinking deltas; backends forward these separately from the text answer. */
   onReasoning?: (delta: string) => void;
+  /** Force the model to call this specific tool on this generation. Providers
+   * without a native tool-choice mechanism ignore it (graceful degradation). */
+  toolChoice?: { name: string };
 }
 
 export interface AgentProvider {

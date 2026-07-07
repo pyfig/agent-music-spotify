@@ -1,11 +1,11 @@
 import {
   CLARIFY_SYSTEM,
   clarifyUser,
-  agentSystemPrompt,
   GENERATE_PLAYLIST_SYSTEM,
   generatePlaylistUserWithAnswers,
   type ClarifyAnswer,
 } from "../agent/prompts";
+import { composeAgentSystem, isVagueRequest } from "../agent/skills";
 import {
   parsePlaylistResponse,
   parseClarifyResponse,
@@ -127,10 +127,13 @@ export async function resolvePlaylist(
 ): Promise<ResolvedPlaylist> {
   const { onProgress, onToken, onReasoning, onEvent, signal, tasteContext, onClarifyTool } = opts;
 
-  // System prompt: prefer the agent-mode preamble, which carries both the
-  // curator contract and the tool-usage discipline. The loop's JSON-fallback
+  // System prompt: base curator contract plus the runtime skills relevant to
+  // this request (clarify-first pinned on top). The loop's JSON-fallback
   // branch handles providers that silently drop tools (some Ollama models).
-  const agentSystem = agentSystemPrompt();
+  const agentSystem = composeAgentSystem({
+    prompt,
+    hasPriorPlaylist: (opts.priorPlaylistContext?.length ?? 0) > 0,
+  });
   const baseSystem = tasteContext
     ? `${agentSystem}\n\n${tasteContext}`
     : agentSystem;
@@ -143,9 +146,17 @@ export async function resolvePlaylist(
   // Sinking the loop with no onClarifyTool disables the clarify tool at the
   // harness layer (the dispatcher throws on it, but the agent won't call it
   // anyway since tools-for-prompt step encodes tool specs in the call itself).
+  // Force a first-turn clarify tool call when the request is obviously vague:
+  // models routinely skip the optional clarify step, so for short unpinned
+  // requests we use native tool-choice forcing instead of hoping the prompt
+  // lands. Never force without a UI hook (the dispatcher throws without one)
+  // or when clarifying answers were already collected.
+  const forceClarify = Boolean(onClarifyTool) && qa.length === 0 && isVagueRequest(prompt);
+
   let agentResult: AgentRunResult;
   try {
     agentResult = await runAgentLoop(provider, baseSystem, user, {
+      firstTurnToolChoice: forceClarify ? "clarify" : undefined,
       deps: {
         music,
         onClarify: onClarifyTool,

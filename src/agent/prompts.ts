@@ -8,42 +8,9 @@ The user's explicit constraints ALWAYS override the defaults above:
 - Honor any other stated constraints (language, era, mood, excluded artists, etc.).
 Keep artist names and track titles in their original language and script (including Cyrillic) exactly as officially released — never transliterate or translate them.`;
 
-/**
- * Agent-mode system prompt. Used when the active provider supports tool-calling
- * and the harness is running an agent loop with `finalize_playlist` as the
- * termination signal. Adds a tool-usage preamble and discipline rules on top of
- * the original curator contract; the loop's per-tool dispatch is what actually
- * executes the research, so the model just needs to call them in order.
- */
-export const GENERATE_PLAYLIST_AGENT_SYSTEM = `${GENERATE_PLAYLIST_SYSTEM}
-
-You are running in agent mode with tools available. Workflow:
-
-1. If you want to anchor the playlist around an artist named in the request, call searchArtist to resolve their id, then getArtistTopTracks to seed a handful of tracks. Otherwise skip this step.
-2. Use searchTrack to verify each candidate track really exists on the active music backend before committing it. Some models hallucinate track titles — verification is mandatory for borderline picks. A pattern of 3-5 representative verifications is enough for a 20-30 track playlist; you do not need to verify every track one by one.
-3. If the request names an artist or album you do not recognize, or a release likely NEWER than your training data (e.g. "new album", a recent year), call web_search to research it (artist + album + "tracklist" works well), then verify concrete tracks with searchTrack. Use web_search at most twice per request; skip it entirely when you already know the material.
-4. If the request is ambiguous (genre, era, mood, energy, language not clear) — including after web_search still leaves ambiguity — call clarify ONCE with one short question and exactly 3 concrete options grounded in the request and the user's prior taste. Otherwise skip clarify.
-5. When your tracklist is ready, call finalize_playlist with the curated ordered list. The harness stops at this call.
-
-Discipline:
-- Use original script (Cyrillic, Hangul, etc.) for artist/title strings exactly as officially released — never transliterate.
-- "artists" lists only artists the user EXPLICITLY named in the request (in their original script); "tracks" is the full ordered list.
-- If you call finalize_playlist, do not also emit a JSON blob in the text answer — finalize_playlist IS the answer.
-- If a clarify call returns an error, retry it ONCE with "question" as a plain string and "options" as a plain array of exactly 3 strings.
-- Keep research lean: at most 5 tool calls total before finalize_playlist. Batch searches when possible; finalize as soon as you have a solid tracklist.
-- If the request includes a "Previous session's playlist" block, treat it as soft seed context: lean toward tracks that flow from that vibe, but the explicit new request wins on conflict. Never copy the prior list verbatim.`;
-
-/**
- * Agent system prompt with the current date appended. The model's training
- * cutoff is in the past — without this it assumes the wrong year and refuses
- * to believe recent releases exist (that's what web_search is for).
- */
-export function agentSystemPrompt(now: Date = new Date()): string {
-  const date = now.toISOString().slice(0, 10);
-  return `${GENERATE_PLAYLIST_AGENT_SYSTEM}
-
-Today's date is ${date}. Your training data ends earlier than this — releases from the recent months may exist that you don't know about. When the request mentions "new", "latest", or a year at or after your knowledge cutoff, trust web_search results over your own memory.`;
-}
+// Agent-mode workflow guidance (clarify-first, research, freshness, curation
+// discipline) lives in the runtime skill files under `src/agent/skills/`,
+// composed per request by `composeAgentSystem` in `src/agent/skills.ts`.
 
 export function generatePlaylistUser(prompt: string): string {
   return `Request: ${prompt}`;

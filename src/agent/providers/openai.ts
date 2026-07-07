@@ -1,6 +1,6 @@
 import type { AgentProvider, AgentResult, GenerateOptions } from "../types";
 import { consumeSseStream } from "./opencode";
-import { toolsForOpenAIChat } from "../tools";
+import { toolChoiceForFamily, toolsForOpenAIChat } from "../tools";
 
 /** Strips paste artifacts (whitespace, wrapping quotes, "Bearer " prefix) that turn a valid key into a rejected one. */
 function sanitizeCredential(value: string): string {
@@ -95,6 +95,9 @@ export class OpenAIProvider implements AgentProvider {
           { role: "user", content: user },
         ],
         ...(toolsPayload ? { tools: toolsPayload, tool_choice: "auto" } : {}),
+        ...(toolsPayload && opts?.toolChoice
+          ? toolChoiceForFamily("openai-compat", opts.toolChoice.name)
+          : {}),
       }),
     });
     if (!res.ok || !res.body) {
