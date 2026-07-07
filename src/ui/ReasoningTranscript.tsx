@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { useTerminalDimensions } from "@opentui/react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import type { AgentEvent } from "../agent/types";
@@ -12,6 +12,10 @@ interface ReasoningTranscriptProps {
   collapsed?: boolean;
   /** Braille spinner frame index for the animated header glyph. */
   spinnerFrame?: number;
+  /** Imperative handle owned by App so its keyboard handler can scroll the
+   * transcript while the agent is still thinking (Up/Down land here instead of
+   * moving a nonexistent selection). When omitted, a local ref is used. */
+  scrollRef?: React.RefObject<ScrollBoxRenderable | null>;
 }
 
 const TONE_FG: Record<TranscriptLine["tone"], string> = {
@@ -21,16 +25,15 @@ const TONE_FG: Record<TranscriptLine["tone"], string> = {
   error: theme.red,
 };
 
-export function ReasoningTranscript({ events, collapsed, spinnerFrame = 0 }: ReasoningTranscriptProps) {
+export function ReasoningTranscript({ events, collapsed, spinnerFrame = 0, scrollRef: externalScrollRef }: ReasoningTranscriptProps) {
   const { height } = useTerminalDimensions();
-  const scrollRef = useRef<ScrollBoxRenderable>(null);
+  const localScrollRef = useRef<ScrollBoxRenderable>(null);
+  const scrollRef = externalScrollRef ?? localScrollRef;
 
-  // Auto-scroll to the latest line as events stream in (mirrors ResultsList).
-  useEffect(() => {
-    const box = scrollRef.current;
-    if (!box) return;
-    box.scrollTop = Number.MAX_SAFE_INTEGER;
-  }, [events]);
+  // Stick-to-bottom is handled by `stickyScroll` on the scrollbox, not by a
+  // forced scrollTop write — that would override the framework's
+  // pin-on-content-grow / disengage-on-manual-scroll state and yank the view
+  // back to the tail every time the user scrolled up to read earlier reasoning.
 
   if (collapsed) {
     const toolCount = countTools(events);
@@ -57,6 +60,11 @@ export function ReasoningTranscript({ events, collapsed, spinnerFrame = 0 }: Rea
       <scrollbox
         ref={scrollRef}
         style={{ flexGrow: 1 }}
+        // stickyScroll keeps the view pinned to the tail as events stream in,
+        // disengages when the user scrolls up to read history, and re-engages
+        // automatically once they scroll back down — the standard chat-tail.
+        stickyScroll
+        stickyStart="bottom"
         scrollbarOptions={{
           showArrows: false,
           trackOptions: { foregroundColor: theme.muted, backgroundColor: theme.surface1 },

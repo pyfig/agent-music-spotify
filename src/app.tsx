@@ -65,6 +65,7 @@ import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
 import { theme } from "./ui/theme";
 import { reduceEvents } from "./ui/reasoning";
+import type { ScrollBoxRenderable } from "@opentui/core";
 
 type Screen = "loading" | "wizard" | "main";
 
@@ -155,6 +156,10 @@ export function App() {
    * once the user picks an option / submits a custom answer. */
   const clarifyResolverRef = useRef<((answer: string) => void) | null>(null);
   const [toast, setToast] = useState<{ msg: string; ts: number } | null>(null);
+  // Live handle on the reasoning-transcript scrollbox so Up/Down can scroll
+  // it while the agent is still generating and the resolved-track list hasn't
+  // taken over the screen (see useKeyboard below).
+  const reasoningScrollRef = useRef<ScrollBoxRenderable | null>(null);
   function show(msg: string) {
     setToast({ msg, ts: Date.now() });
   }
@@ -165,6 +170,11 @@ export function App() {
   }, [toast]);
   // Taste sessions group by generation; /like lands in the latest one.
   const sessionHeaderRef = useRef<string>(new Date().toISOString().slice(0, 16));
+  // Soft seed context: the previous session's resolved playlist (as
+  // "artist – title" lines) is fed into the next generation's user prompt.
+  // Lives in memory only — /clear nulls it; restart loses it (consistent
+  // with `resolved`/`committedPlaylist`/`events`).
+  const priorPlaylistRef = useRef<string[] | null>(null);
 
   function disarmEsc() {
     if (escTimerRef.current) clearTimeout(escTimerRef.current);
@@ -351,6 +361,7 @@ export function App() {
     setCommittedPlaylist(null);
     setPendingBasePrompt(null);
     setClarifyAnswers([]);
+    priorPlaylistRef.current = null;
   }
 
   useKeyboard(async (key) => {
@@ -523,6 +534,54 @@ export function App() {
       return;
     }
     // Input owns printable keys; only handle chrome/navigation.
+    // While the agent is still thinking and no resolved tracks exist yet, the
+    // only scrollable surface on screen is the reasoning transcript. Repurpose
+    // Up/Down (and PageUp/PageDown) to scroll it instead of mutating a
+    // selectedIndex that has nothing to point at. stickyScroll on the box
+    // auto-disengages when the user scrolls up and re-engages once they reach
+    // the tail again — `scrollBy` flips those flags via the scrollbox's
+    // updateStickyState, so no extra bookkeeping is needed here.
+    if (loading && lines.length === 0) {
+      const box = reasoningScrollRef.current;
+      if (box) {
+        if (key.name === "up") {
+          key.stopPropagation();
+          key.preventDefault();
+          box.scrollBy(-1, "step");
+          return;
+        }
+        if (key.name === "down") {
+          key.stopPropagation();
+          key.preventDefault();
+          box.scrollBy(1, "step");
+          return;
+        }
+        if (key.name === "pageup") {
+          key.stopPropagation();
+          key.preventDefault();
+          box.scrollBy(-0.5, "viewport");
+          return;
+        }
+        if (key.name === "pagedown") {
+          key.stopPropagation();
+          key.preventDefault();
+          box.scrollBy(0.5, "viewport");
+          return;
+        }
+        if (key.name === "home") {
+          key.stopPropagation();
+          key.preventDefault();
+          box.scrollTo(0);
+          return;
+        }
+        if (key.name === "end") {
+          key.stopPropagation();
+          key.preventDefault();
+          box.scrollTo(Number.MAX_SAFE_INTEGER);
+          return;
+        }
+      }
+    }
     if (key.name === "down") {
       setSelectedIndex((i) => Math.min(i + 1, Math.max(lines.length - 1, 0)));
       return;
@@ -803,6 +862,7 @@ export function App() {
           onEvent: (e) => setEvents((prev) => reduceEvents(prev, e)),
           signal: controller.signal,
           tasteContext: (tasteFull ?? "") + tasteClarifyChannel || undefined,
+          priorPlaylistContext: priorPlaylistRef.current ?? undefined,
           onClarifyTool: async (question, options) => {
             // Surface the question to the existing ClarifyPrompt UI; await the
             // user's answer via a deferred resolver.
@@ -820,6 +880,9 @@ export function App() {
       setCommittedPlaylist(null);
       setAwaitingConfirm(true);
       setSelectedIndex(0);
+      // Capture the just-finished playlist as soft seed for the NEXT request.
+      // /clear nulls this ref; the next runResolve reads it before overwriting.
+      priorPlaylistRef.current = r.resolved.map((t) => `${t.artist} – ${t.title}`);
       void recordTasteSession(r);
       return r;
     } catch (e) {
@@ -1000,6 +1063,40 @@ export function App() {
         return;
       }
       await savePlaylist();
+      return;
+    }
+    if (trimmed === "/clear") {
+      setInput("");
+      // Abort any in-flight generation (mirror the double-Esc path) so a
+      // clear mid-generation actually stops the loop instead of racing it.
+      if (loading) {
+        const drain = clarifyResolverRef.current as ((answer: string) => void) | null;
+        if (drain) {
+          clarifyResolverRef.current = null;
+          drain("");
+        }
+        abortRef.current?.abort();
+      }
+      // Stop local playback so a still-running mpv/Spotify doesn't outlive
+      // the cleared session (mirror applyBackendChoice).
+      await player.stop();
+      setResolved(null);
+      setCommittedPlaylist(null);
+      setAwaitingConfirm(false);
+      setPendingBasePrompt(null);
+      setClarifyQuestions(null);
+      setClarifyStepIndex(0);
+      setClarifyAnswers([]);
+      setEvents([]);
+      setProgress(null);
+      setError(undefined);
+      setCurrentlyPlayingUri(null);
+      setIsPlaying(false);
+      setTrackPos(null);
+      setSelectedIndex(0);
+      // Wipe the prior-playlist seed so the next request starts fresh.
+      priorPlaylistRef.current = null;
+      show("session cleared");
       return;
     }
     if (trimmed === "/like" || trimmed.startsWith("/like ")) {
@@ -1364,6 +1461,7 @@ export function App() {
                     loading={loading || connecting}
                     events={events}
                     spinnerFrame={spinnerFrame}
+                    reasoningScrollRef={reasoningScrollRef}
                   />
                   {awaitingConfirm && (
                     <ConfirmActions
@@ -1414,6 +1512,14 @@ export function App() {
                 volume={volume}
                 muted={mutedVolume !== null}
               />
+              {/* Model on its own row below the status bar — keeps the backend
+                  indicator (`♪ spotify ✓`) above it and stops long model
+                  labels from competing with hints/volume on the status row. */}
+              {!loading && !connecting ? (
+                <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
+                  <text fg={theme.subtext}> {modelLabel}</text>
+                </box>
+              ) : null}
             </>
           )}
       </box>

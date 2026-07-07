@@ -85,23 +85,42 @@ export function StatusBar({
         <text fg={theme.red}> {error}</text>
       ) : loading && progress ? (
         <>
-          <text fg={theme.subtext}>
-            {" "}
-            {truncateLabel(model)} ·{" "}
-          </text>
-          <text fg={theme.accent}>
-            {SPINNER[spinnerFrame % SPINNER.length]} {progressLabel(progress, tokenCount)} ·{" "}
-            {elapsed}s
-          </text>
-          {cancelHint && <text fg={theme.yellow}> · esc cancels</text>}
-        </>
-      ) : (
-        <>
-          {/* Left: identity (model · backend) — shrinks first when narrow. */}
+          {/* Left: backend identity (model lives on its own row above/below). */}
           <box style={{ flexDirection: "row", flexShrink: 1, overflow: "hidden" }}>
             <text fg={theme.subtext}>
               {" "}
-              {truncateLabel(model)} · {backendLabel}
+              {backendLabel}
+            </text>
+            {!!excludedCount && <text fg={theme.maroon}> · {excludedCount} excluded</text>}
+          </box>
+          {/* Right: spinner + thinking/vol — keeps its width so it never clips. */}
+          <box style={{ flexDirection: "row", flexShrink: 0, flexGrow: 1, justifyContent: "flex-end" }}>
+            <text fg={theme.accent}>
+              {SPINNER[spinnerFrame % SPINNER.length]} {progressLabel(progress, tokenCount)}
+              {" · "}
+              {elapsed}s
+            </text>
+            {cancelHint && <text fg={theme.yellow}> · esc cancels</text>}
+            {muted ? (
+              <text fg={theme.maroon}> · 🔇 muted</text>
+            ) : volume !== null ? (
+              <text>
+                <span fg={theme.subtext}> · vol </span>
+                <span fg={theme.accent}>{volumeBar(volume)}</span>
+                <span fg={theme.subtext}> {volume}%</span>
+              </text>
+            ) : null}
+          </box>
+        </>
+      ) : (
+        <>
+          {/* Left: backend identity — model lives in its own row above (see App),
+              so it doesn't share the line with hints/vol and stop competing
+              for attention with the spinner during generation. */}
+          <box style={{ flexDirection: "row", flexShrink: 1, overflow: "hidden" }}>
+            <text fg={theme.subtext}>
+              {" "}
+              {backendLabel}
               {loading ? " · generating…" : ""}
             </text>
             {!!excludedCount && !loading && !error ? (
@@ -113,11 +132,7 @@ export function StatusBar({
             {!loading && (
               <text>
                 <span fg={theme.subtext}>/</span>
-                <span fg={theme.muted}> commands · </span>
-                <span fg={theme.subtext}>⏎</span>
-                <span fg={theme.muted}> play · </span>
-                <span fg={theme.subtext}>q</span>
-                <span fg={theme.muted}> quit</span>
+                <span fg={theme.muted}> commands</span>
               </text>
             )}
             {muted ? (
