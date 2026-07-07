@@ -10,6 +10,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/music", description: "switch music provider (Spotify / SoundCloud / YouTube Music)" },
   { cmd: "/random", description: "let the model pick a genre and generate" },
   { cmd: "/save", description: "save current track list as a playlist" },
+  { cmd: "/clear", description: "clear session (results + context + playback)" },
   { cmd: "/login", description: "reconnect Spotify account" },
   { cmd: "/clientid", description: "set your own Spotify app client ID" },
   { cmd: "/effort", description: "set Claude reasoning effort" },
