@@ -71,9 +71,11 @@ const clarifySpec: ToolSpec = {
   description:
     "Ask the user one clarifying question with 3 concrete options. " +
     "The harness surfaces this in the TUI and returns the user's chosen answer " +
-    "(one of the options or a custom free-text answer). Call when the request is " +
-    "ambiguous enough to benefit from disambiguation. Call at most once per request " +
-    "with a single question; do not batch multiple questions.",
+    "(one of the options or a custom free-text answer). Prefer calling this FIRST, " +
+    "before any search tools, whenever genre, era, mood, energy, or language is not " +
+    "pinned down by the request — it is cheap for the user, and skipping it produces " +
+    "generic playlists. Call at most once per request with a single question; do not " +
+    "batch multiple questions.",
   parameters: {
     type: "object",
     properties: {
@@ -306,5 +308,27 @@ export function toolsForFamily(family: "anthropic" | "openai-responses" | "opena
     case "openai-compat":
     default:
       return toolsForOpenAIChat(specs);
+  }
+}
+
+/**
+ * Build the family-specific request-body fragment that forces the model to
+ * call one named tool. The returned object is spread into the request body
+ * alongside `tools` by the provider.
+ */
+export function toolChoiceForFamily(
+  family: "anthropic" | "openai-responses" | "openai-compat" | "google",
+  name: string,
+): Record<string, unknown> {
+  switch (family) {
+    case "anthropic":
+      return { tool_choice: { type: "tool", name } };
+    case "openai-responses":
+      return { tool_choice: { type: "function", name } };
+    case "google":
+      return { toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [name] } } };
+    case "openai-compat":
+    default:
+      return { tool_choice: { type: "function", function: { name } } };
   }
 }

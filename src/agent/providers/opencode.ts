@@ -1,5 +1,5 @@
 import type { AgentProvider, AgentResult, GenerateOptions, ToolCall } from "../types";
-import { toolsForFamily } from "../tools";
+import { toolChoiceForFamily, toolsForFamily } from "../tools";
 
 export interface OpencodeProviderConfig {
   /** Stable provider id surfaced in the UI & config: "opencode-go" | "opencode-zen". */
@@ -70,6 +70,11 @@ export class OpencodeProvider implements AgentProvider {
   /** Turns a failed HTTP response into an actionable Error, with extra detail on 401/403. */
   private async requestFailed(res: Response): Promise<Error> {
     const body = (await res.text()).slice(0, 500);
+    const fail = (message: string): Error => {
+      const err = new Error(message) as Error & { status?: number };
+      err.status = res.status;
+      return err;
+    };
     if (res.status === 401 || res.status === 403) {
       const fp = this.apiKey
         ? `len=${this.apiKey.length} …${this.apiKey.slice(-4)}`
@@ -82,13 +87,13 @@ export class OpencodeProvider implements AgentProvider {
             "for Zen can still 401 on Go (see opencode/opencode#17541). Verify " +
             "this key was issued specifically for the Go subscription."
           : "";
-      return new Error(
+      return fail(
         `opencode ${this.name}: API key rejected (HTTP ${res.status}). ` +
           `Key [${fp}] was refused — verify it is a valid, active ${this.name} key and that no ` +
           `stale ${envVar} env var is overriding your configured key.${goHint} Server said: ${body}`,
       );
     }
-    return new Error(`opencode ${this.name} request failed: ${res.status} ${body}`);
+    return fail(`opencode ${this.name} request failed: ${res.status} ${body}`);
   }
 
   async generate(
@@ -116,7 +121,35 @@ export class OpencodeProvider implements AgentProvider {
     };
     const label = `opencode ${this.name}`;
     const tools = opts?.tools?.length ? toolsForFamily(family, opts.tools) : undefined;
+    // Forced tool choice (e.g. first-turn clarify), in the family's native shape.
+    const forced = tools && opts?.toolChoice ? toolChoiceForFamily(family, opts.toolChoice.name) : undefined;
 
+    if (!forced) return this.request(family, headers, label, system, user, tools, undefined, onToken, signal, opts);
+    try {
+      return await this.request(family, headers, label, system, user, tools, forced, onToken, signal, opts);
+    } catch (e) {
+      // Some upstreams behind the gateway (e.g. deepseek on the Go tier)
+      // reject any non-"auto" tool_choice with a 400. Forcing is an
+      // optimization, not a contract — degrade to an unforced request.
+      if ((e as { status?: number }).status === 400) {
+        return this.request(family, headers, label, system, user, tools, undefined, onToken, signal, opts);
+      }
+      throw e;
+    }
+  }
+
+  private async request(
+    family: ZenFamily,
+    headers: Record<string, string>,
+    label: string,
+    system: string,
+    user: string,
+    tools: unknown,
+    choice: Record<string, unknown> | undefined,
+    onToken?: (delta: string) => void,
+    signal?: AbortSignal,
+    opts?: GenerateOptions,
+  ): Promise<AgentResult> {
     switch (family) {
       case "anthropic": {
         const res = await fetch(`${this.baseUrl}/messages`, {
@@ -130,6 +163,7 @@ export class OpencodeProvider implements AgentProvider {
             stream: true,
             messages: [{ role: "user", content: user }],
             ...(tools ? { tools } : {}),
+            ...(choice ?? {}),
           }),
         });
         if (!res.ok || !res.body) {
@@ -148,6 +182,7 @@ export class OpencodeProvider implements AgentProvider {
             input: user,
             stream: true,
             ...(tools ? { tools } : {}),
+            ...(choice ?? {}),
           }),
         });
         if (!res.ok || !res.body) {
@@ -164,6 +199,7 @@ export class OpencodeProvider implements AgentProvider {
             contents: [{ role: "user", parts: [{ text: user }] }],
             systemInstruction: { parts: [{ text: system }] },
             ...(tools ? { tools } : {}),
+            ...(choice ?? {}),
           }),
         });
         if (!res.ok || !res.body) {
@@ -185,6 +221,7 @@ export class OpencodeProvider implements AgentProvider {
               { role: "user", content: user },
             ],
             ...(tools ? { tools, tool_choice: "auto" } : {}),
+            ...(choice ?? {}),
           }),
         });
         if (!res.ok || !res.body) {

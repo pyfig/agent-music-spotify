@@ -35,6 +35,10 @@ export interface AgentLoopOptions {
   onEvent?: (e: AgentEvent) => void;
   signal?: AbortSignal;
   callbacks?: AgentLoopCallbacks;
+  /** Force this tool on the FIRST iteration only (e.g. clarify for vague
+   * requests). Subsequent iterations run unforced; providers without native
+   * tool-choice support ignore it. */
+  firstTurnToolChoice?: string;
 }
 
 /**
@@ -116,7 +120,13 @@ export async function runAgentLoop(
       user,
       opts.onToken,
       opts.signal,
-      { tools, onReasoning: emitReasoning },
+      {
+        tools,
+        onReasoning: emitReasoning,
+        ...(i === 0 && opts.firstTurnToolChoice
+          ? { toolChoice: { name: opts.firstTurnToolChoice } }
+          : {}),
+      },
     );
     lastText = result.text;
 
@@ -194,7 +204,7 @@ export async function runAgentLoop(
           `${user}\n\nYou are out of research budget. Call finalize_playlist NOW with your best tracklist based on everything above. It is the only tool available.`,
           opts.onToken,
           opts.signal,
-          { tools: finalizeOnly, onReasoning: emitReasoning },
+          { tools: finalizeOnly, onReasoning: emitReasoning, toolChoice: { name: "finalize_playlist" } },
         );
         const rescueFinalize = (rescue.toolCalls ?? []).find((c) => c.name === "finalize_playlist");
         if (rescueFinalize) {

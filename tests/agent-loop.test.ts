@@ -262,6 +262,48 @@ describe("runAgentLoop termination", () => {
   });
 });
 
+describe("runAgentLoop firstTurnToolChoice", () => {
+  test("forced tool choice reaches the provider on iteration 0 only", async () => {
+    const seenChoices: (string | undefined)[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "choice-capture",
+      generate: async (_system, _user, _onToken, _signal, opts) => {
+        seenChoices.push(opts?.toolChoice?.name);
+        if (call++ === 0) {
+          return { text: "", toolCalls: [{ id: "c1", name: "clarify", args: { question: "Era?", options: ["80s", "90s", "00s"] } }] };
+        }
+        return {
+          text: "",
+          toolCalls: [{ id: "c2", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }],
+        };
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", {
+      firstTurnToolChoice: "clarify",
+      deps: { music: fakeMusic(), onClarify: async (_q, opts) => opts[0]! },
+    });
+    expect(r.playlist.name).toBe("X");
+    expect(seenChoices).toEqual(["clarify", undefined]);
+  });
+
+  test("no firstTurnToolChoice → provider never sees a toolChoice", async () => {
+    const seenChoices: (string | undefined)[] = [];
+    const provider: AgentProvider = {
+      name: "choice-capture",
+      generate: async (_system, _user, _onToken, _signal, opts) => {
+        seenChoices.push(opts?.toolChoice?.name);
+        return {
+          text: "",
+          toolCalls: [{ id: "c1", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }],
+        };
+      },
+    };
+    await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } });
+    expect(seenChoices).toEqual([undefined]);
+  });
+});
+
 describe("runAgentLoop onEvent transcript", () => {
   test("emits reasoning, tool_call, then tool_result in call order", async () => {
     // First generate streams reasoning + a searchTrack call; second finalizes.
