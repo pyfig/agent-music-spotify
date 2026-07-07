@@ -1476,7 +1476,7 @@ export function App() {
               )}
               {nowPlaying && !loading && !connecting ? (
                 <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
-                  <box style={{ flexDirection: "row", flexShrink: 1, overflow: "hidden" }}>
+                  <box style={{ flexDirection: "row", flexGrow: 1, flexShrink: 1, overflow: "hidden" }}>
                     <text>
                       <span fg={theme.subtext}> {isPlaying ? "▶" : "⏸"} </span>
                       <span fg={theme.muted}>{nowPlaying}</span>
