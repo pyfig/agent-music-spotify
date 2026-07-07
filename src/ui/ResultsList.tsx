@@ -30,9 +30,12 @@ interface ResultsListProps {
   events?: AgentEvent[];
   /** Braille spinner frame for the transcript header glyph. */
   spinnerFrame?: number;
+  /** Forwarded to ReasoningTranscript so App can scroll it while the agent is
+   * still generating and the resolved list hasn't appeared yet. */
+  reasoningScrollRef?: React.RefObject<ScrollBoxRenderable | null>;
 }
 
-export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayingUri, isPlaying, loading, events = [], spinnerFrame }: ResultsListProps) {
+export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayingUri, isPlaying, loading, events = [], spinnerFrame, reasoningScrollRef }: ResultsListProps) {
   const { height } = useTerminalDimensions();
   const scrollRef = useRef<ScrollBoxRenderable>(null);
 
@@ -55,7 +58,7 @@ export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayi
 
   if (lines.length === 0) {
     if (loading) {
-      return <ReasoningTranscript events={events} spinnerFrame={spinnerFrame} />;
+      return <ReasoningTranscript events={events} spinnerFrame={spinnerFrame} scrollRef={reasoningScrollRef} />;
     }
     return (
       <box style={{ flexGrow: 1, alignItems: "center", justifyContent: "center" }}>
