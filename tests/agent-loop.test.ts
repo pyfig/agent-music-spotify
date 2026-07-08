@@ -262,6 +262,99 @@ describe("runAgentLoop termination", () => {
   });
 });
 
+describe("runAgentLoop duplicate-call detection", () => {
+  test("identical repeated call is not re-dispatched; cached result + warning fed back", async () => {
+    let searchCalls = 0;
+    const music = fakeMusic({
+      searchTrack: async (artist, title) => {
+        searchCalls++;
+        return fakeTrack("spotify:track:x", artist, title);
+      },
+    });
+    const userPrompts: string[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "repeater",
+      generate: async (_system, user) => {
+        userPrompts.push(user);
+        if (call++ < 2) {
+          // Same tool, same args (key order shuffled on the repeat).
+          return {
+            text: "",
+            toolCalls: [{ id: `c${call}`, name: "searchTrack", args: call === 1 ? { artist: "A", title: "B" } : { title: "B", artist: "A" } }],
+          };
+        }
+        return {
+          text: "",
+          toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }],
+        };
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music } });
+    expect(r.playlist.name).toBe("X");
+    expect(searchCalls).toBe(1);
+    expect(r.toolTrace).toEqual(["searchTrack", "searchTrack (duplicate)", "finalize_playlist"]);
+    // The second follow-up turn carries the duplicate warning + cached result.
+    expect(userPrompts[2]).toContain("[duplicate call");
+    expect(userPrompts[2]).toContain("spotify:track:x");
+  });
+
+  test("same tool with different args dispatches normally", async () => {
+    let searchCalls = 0;
+    const music = fakeMusic({
+      searchTrack: async (artist, title) => {
+        searchCalls++;
+        return fakeTrack(`spotify:track:${title}`, artist, title);
+      },
+    });
+    const { provider } = scriptedProvider([
+      { text: "", toolCalls: [{ id: "c1", name: "searchTrack", args: { artist: "A", title: "B" } }] },
+      { text: "", toolCalls: [{ id: "c2", name: "searchTrack", args: { artist: "A", title: "C" } }] },
+      { text: "", toolCalls: [{ id: "c3", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }] },
+    ]);
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music } });
+    expect(searchCalls).toBe(2);
+    expect(r.toolTrace).toEqual(["searchTrack", "searchTrack", "finalize_playlist"]);
+  });
+
+  test("repeated clarify with identical args still reaches the UI hook", async () => {
+    let clarifyHookCalls = 0;
+    const { provider } = scriptedProvider([
+      { text: "", toolCalls: [{ id: "c1", name: "clarify", args: { question: "Era?", options: ["80s", "90s"] } }] },
+      { text: "", toolCalls: [{ id: "c2", name: "clarify", args: { question: "Era?", options: ["80s", "90s"] } }] },
+      { text: "", toolCalls: [{ id: "c3", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }] },
+    ]);
+    await runAgentLoop(provider, "sys", "user", {
+      deps: {
+        music: fakeMusic(),
+        onClarify: async () => {
+          clarifyHookCalls++;
+          return "80s";
+        },
+      },
+    });
+    expect(clarifyHookCalls).toBe(2);
+  });
+
+  test("errored call is not cached; identical retry re-dispatches", async () => {
+    let attempts = 0;
+    const music = fakeMusic({
+      searchArtist: async () => {
+        attempts++;
+        if (attempts === 1) throw new Error("network down");
+        return { id: "aid", name: "A" };
+      },
+    });
+    const { provider } = scriptedProvider([
+      { text: "", toolCalls: [{ id: "c1", name: "searchArtist", args: { name: "A" } }] },
+      { text: "", toolCalls: [{ id: "c2", name: "searchArtist", args: { name: "A" } }] },
+      { text: "", toolCalls: [{ id: "c3", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }] },
+    ]);
+    await runAgentLoop(provider, "sys", "user", { deps: { music } });
+    expect(attempts).toBe(2);
+  });
+});
+
 describe("runAgentLoop firstTurnToolChoice", () => {
   test("forced tool choice reaches the provider on iteration 0 only", async () => {
     const seenChoices: (string | undefined)[] = [];

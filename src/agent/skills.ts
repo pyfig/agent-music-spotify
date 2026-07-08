@@ -4,6 +4,7 @@ import curationMd from "./skills/curation.md" with { type: "text" };
 import researchMd from "./skills/research.md" with { type: "text" };
 import freshnessMd from "./skills/freshness.md" with { type: "text" };
 import continuityMd from "./skills/continuity.md" with { type: "text" };
+import antiLoopMd from "./skills/anti-loop.md" with { type: "text" };
 
 /**
  * A runtime agent skill: a markdown prompt module with frontmatter. Skills are
@@ -70,6 +71,7 @@ export const BUNDLED_SKILLS: Skill[] = [
   freshnessMd,
   continuityMd,
   curationMd,
+  antiLoopMd,
 ].map(parseSkill);
 
 /**

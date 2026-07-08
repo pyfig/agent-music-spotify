@@ -51,15 +51,15 @@ describe("parseSkill", () => {
 });
 
 describe("BUNDLED_SKILLS", () => {
-  test("all five bundled skill files parse with expected names", () => {
+  test("all six bundled skill files parse with expected names", () => {
     expect(BUNDLED_SKILLS.map((s) => s.name).sort()).toEqual(
-      ["clarify", "continuity", "curation", "freshness", "research"],
+      ["anti-loop", "clarify", "continuity", "curation", "freshness", "research"],
     );
   });
 
-  test("clarify, curation, and research are always-on", () => {
+  test("clarify, curation, research, and anti-loop are always-on", () => {
     const always = BUNDLED_SKILLS.filter((s) => s.always).map((s) => s.name).sort();
-    expect(always).toEqual(["clarify", "curation", "research"]);
+    expect(always).toEqual(["anti-loop", "clarify", "curation", "research"]);
   });
 });
 
