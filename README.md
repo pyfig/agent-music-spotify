@@ -43,17 +43,22 @@ The built-in client ID is shared and its API quota can run out (you'll see a `42
 ### Keys & commands
 
 - `/` opens the command dropdown — arrows navigate, **Tab** completes, **Enter** runs:
-  - `/model` — switch AI provider/model
-  - `/settings` — configure provider keys, models, base URLs
+  - `/model` — switch AI provider/model (and edit provider keys, models, base URLs)
+  - `/music` — switch music backend (Spotify / SoundCloud / YouTube Music)
   - `/random` — let the model pick a genre
   - `/save` — save the current track list as a playlist
+  - `/history` — browse past sessions: reasoning transcript + load tracks for playback
+  - `/clear` — clear session (results + context + playback)
   - `/clientid` — set your own Spotify app client ID
   - `/login` — reconnect Spotify
   - `/effort` — set Claude reasoning effort (low · medium · high · none)
+  - `/systemprompt` — set a custom system prompt for Claude
   - `/like [comment]` — remember the current track in taste memory
   - `/memory` — show saved taste memory
   - `/forget` — clear taste memory
   - `/quit` — exit
+
+  Unknown `/commands` show an error instead of being sent to the agent.
 - Arrows — move selection in results (or scroll the reasoning transcript while the agent is still thinking); **Enter** on empty input — play the selected track (Spotify backend needs an open Spotify app on any device; other backends play locally via mpv). The now-playing row shows `0:15 ━━━━━ 3:34` with `←/→` adjusting volume and `Ctrl+U` toggling mute.
 - **Ctrl+P** — cycle agent provider. **Ctrl+B** — switch music backend. **←/→** — volume. **Ctrl+U** — mute. **Esc Esc** — cancel generation. **Ctrl+C** — quit.
 
@@ -71,19 +76,23 @@ Switch with **Ctrl+B** or `MUSIC_BACKEND` env / `musicBackend` config key.
 
 Backends without remote playlists queue the resolved track list into the local mpv player instead ("Add" plays the whole list; **Enter** plays from the selected track).
 
+## Session history
+
+Every successful generation is saved to `~/.config/spotify-harness-tui/history.json` (capped at 50 sessions): the request, the track list, and the full reasoning/tool transcript. Each session gets an LLM-summarized title (falls back to the playlist name). `/history` opens the browser — pick a session to read the stored reasoning, press **Enter** inside to re-resolve its tracks against the current backend and load them as a playable list (playback, `/save`, `/like` all work as usual).
+
 ## Taste memory
 
 Generated sessions and `/like`d tracks accumulate in `.commandcode/taste/taste.md` and bias future playlists. Raw sessions are capped at 10 — older ones get summarized into a compact `Preferences` block automatically. Artist names extracted from preferences + sessions are also surfaced to the agent's `clarify` tool so disambiguating questions stay grounded in your prior taste.
 
 ## Agent loop
 
-API providers (`openai`, `opencode`, `ollama` with a tool-capable model) drive a multi-turn agent loop instead of a single prompt→JSON shot. The model gets tools (`searchTrack`, `searchArtist`, `getArtistTopTracks`, `clarify`, `finalize_playlist`), investigates the active music backend, asks at most one clarifying question through the existing ClarifyPrompt UI, then commits the playlist via the `finalize_playlist` tool. The loop is bounded — at most 8 iterations, then it errors. Models that silently drop the tools (older Ollama backends) fall through to the JSON-in-text fallback, so legacy flow still works.
+API providers (`openai`, `opencode`, `ollama` with a tool-capable model) drive a multi-turn agent loop instead of a single prompt→JSON shot. The model gets tools (`searchTrack`, `searchArtist`, `getArtistTopTracks`, `clarify`, `finalize_playlist`), investigates the active music backend, asks at most one clarifying question through the existing ClarifyPrompt UI, then commits the playlist via the `finalize_playlist` tool. The loop is bounded — at most 8 iterations, then it errors. A duplicate-call guard keeps weaker models from looping on the same query: repeating a tool call with identical arguments replays the cached result with a warning instead of re-dispatching, and an always-on `anti-loop` prompt skill tells the model to reuse prior results and finalize when stuck. Models that silently drop the tools (older Ollama backends) fall through to the JSON-in-text fallback, so legacy flow still works.
 
 While the agent thinks, a `ReasoningTranscript` panel takes over the list area as a chat-style log of reasoning/tool lines, pinned to the tail via `stickyScroll` — it disengages when you scroll up with arrows to read earlier reasoning and re-engages once you reach the bottom again. The status bar shows `⠋ thinking n=… · elapsed·s · vol` on the right while the backend identity (`♪ spotify ✓`) stays on the left.
 
 ## Config
 
-Optional overrides via env vars or `~/.config/spotify-harness-tui/config.json` (env > file > default). All keys are editable in-app via `/settings`.
+Optional overrides via env vars or `~/.config/spotify-harness-tui/config.json` (env > file > default). Provider keys/models are editable in-app via `/model`; the music backend via `/music`.
 
 | Env var | Config key | Default | Purpose |
 |---|---|---|---|
@@ -121,7 +130,7 @@ Minimal `config.json`:
 
 ### Agent provider
 
-Cycle with **Ctrl+P** or `/model`, configure keys/models in `/settings`.
+Cycle with **Ctrl+P** or `/model` (each provider's config page there edits its keys/models).
 
 - **claude-cli**: requires the `claude` CLI installed and authenticated on your machine.
 - **ollama**: requires a running Ollama daemon (`ollama serve`) with a pulled model.
