@@ -187,7 +187,7 @@ export async function resolvePlaylist(
   // trust that to have produced URIs (some providers normalize tool args
   // differently). Worker pool identical to the legacy path.
   const rec = agentResult.playlist;
-  const { resolved, unresolved } = await resolvePlaylistWorker(rec.tracks, music, signal, onProgress);
+  const { resolved, unresolved } = await resolveTracks(rec.tracks, music, signal, onProgress);
 
   // Named-artists guarantee — unchanged from the legacy implementation.
   const artistTracks: Track[] = [];
@@ -219,8 +219,10 @@ export async function resolvePlaylist(
  * Worker pool identical to the legacy resolve step: 5 concurrent searchTrack
  * calls with per-call timeout. Auth / transient failures bubble up; genuine
  * "not on backend" results become null and are pushed to `unresolved`.
+ * Exported for callers that already have {artist,title} recs and only need
+ * backend URIs (e.g. replaying a /history session).
  */
-async function resolvePlaylistWorker(
+export async function resolveTracks(
   tracks: TrackRec[],
   music: MusicProvider,
   signal: AbortSignal | undefined,

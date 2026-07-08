@@ -45,6 +45,7 @@ import type { MusicBackend, RemotePlaylist } from "./music/types";
 import { MusicBackendPicker } from "./ui/MusicBackendPicker";
 import {
   resolvePlaylist,
+  resolveTracks,
   commitPlaylist,
   type ResolvedPlaylist,
   type Progress,
@@ -60,7 +61,14 @@ import { ConnectPrompt } from "./ui/ConnectPrompt";
 import { ClarifyPrompt } from "./ui/ClarifyPrompt";
 import { ClientIdPrompt } from "./ui/ClientIdPrompt";
 import { SystemPromptPrompt } from "./ui/SystemPromptPrompt";
-import { SettingsScreen } from "./ui/SettingsScreen";
+import { HistoryScreen } from "./ui/HistoryScreen";
+import {
+  appendHistory,
+  HISTORY_TITLE_SYSTEM,
+  loadHistory,
+  updateHistoryTitle,
+  type HistoryEntry,
+} from "./core/history";
 import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
 import { barParts, theme, truncateLabel } from "./ui/theme";
@@ -102,8 +110,6 @@ export function App() {
   );
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [systemPromptText, setSystemPromptText] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   const [input, setInput] = useState("");
   const [authed, setAuthed] = useState(false);
   const authedRef = useRef(false);
@@ -150,6 +156,14 @@ export function App() {
   const [forgetOpen, setForgetOpen] = useState(false);
   /** Ordered reasoning/tool transcript, rendered as a chat-style thinking log. */
   const [events, setEvents] = useState<AgentEvent[]>([]);
+  // Mirror of `events` readable from runResolve's closure (state var is stale
+  // there); used to persist the transcript into session history.
+  const eventsRef = useRef<AgentEvent[]>([]);
+  /** /history overlay: non-null = open, newest-first session list. */
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[] | null>(null);
+  /** Picked session whose stored transcript is shown (detail level). */
+  const [historyDetail, setHistoryDetail] = useState<HistoryEntry | null>(null);
+  const historyScrollRef = useRef<ScrollBoxRenderable | null>(null);
   /** Deferred resolver for the in-loop `clarify` tool: when the agent calls
    * clarify, the loop awaits this promise; we resolve it from `advanceClarify`
    * once the user picks an option / submits a custom answer. */
@@ -272,7 +286,7 @@ export function App() {
     !clientIdOpen &&
     !effortPickerOpen &&
     !systemPromptOpen &&
-    !settingsOpen &&
+    historyEntries === null &&
     slashCommands.length > 0;
 
   const isSpotifyBackend = config?.musicBackend !== "soundcloud" && config?.musicBackend !== "youtube-music";
@@ -366,9 +380,6 @@ export function App() {
   useKeyboard(async (key) => {
     if (key.ctrl && key.name === "c") process.exit(0);
     if (screen !== "main") return;
-    // SettingsScreen owns its own keyboard (Esc nav through 3 levels); App
-    // must not also react while it's open. Ctrl+C above still works.
-    if (settingsOpen) return;
     if (confirmConnect) {
       if (key.name === "y") {
         const resume = pendingPrompt;
@@ -401,6 +412,21 @@ export function App() {
     }
     if (memoryText !== null) {
       if (key.name === "escape") setMemoryText(null);
+      return;
+    }
+    if (historyEntries !== null) {
+      if (historyDetail) {
+        // Detail level: scroll the stored transcript; Esc back to the list.
+        const box = historyScrollRef.current;
+        if (key.name === "up") box?.scrollBy(-1, "step");
+        else if (key.name === "down") box?.scrollBy(1, "step");
+        else if (key.name === "pageup") box?.scrollBy(-0.5, "viewport");
+        else if (key.name === "pagedown") box?.scrollBy(0.5, "viewport");
+        else if (key.name === "escape") setHistoryDetail(null);
+        else if (key.name === "return") void loadHistorySession(historyDetail);
+        return;
+      }
+      if (key.name === "escape") setHistoryEntries(null);
       return;
     }
     if (clarifyQuestions !== null) {
@@ -708,31 +734,6 @@ export function App() {
     setConfig(next);
   }
 
-  async function applySettingsEdit(partial: FileConfig) {
-    // /settings is Music-only now. A backend switch must run the same cleanup
-    // as applyBackendChoice: old-backend URIs can't be played or committed on
-    // the new backend, so drop the resolved list and stop playback.
-    const switchingBackend =
-      partial.musicBackend !== undefined &&
-      partial.musicBackend !== config?.musicBackend;
-    if (switchingBackend) {
-      await player.stop();
-      setCurrentlyPlayingUri(null);
-      setIsPlaying(false);
-      setAwaitingConfirm(false);
-      setResolved(null);
-      setCommittedPlaylist(null);
-      setSelectedIndex(0);
-    }
-    const next = await saveConfig(partial);
-    setConfig(next);
-    if (switchingBackend) {
-      setError(
-        checkLocalPlaybackDeps(next.musicBackend) ?? undefined,
-      );
-    }
-  }
-
   // Push a new volume to the active backend and persist it. Spotify routes
   // through its Web API; local backends go through the mpv singleton. The
   // polling effect keeps `volume` in sync if the backend changes it on its
@@ -818,6 +819,7 @@ export function App() {
     setElapsed(0);
     setStartTime(Date.now());
     setEvents([]);
+    eventsRef.current = [];
     // Clear the previous run's results so the reasoning transcript takes over
     // the screen (it only renders when the track list is empty). Without this,
     // a re-run leaves the stale list up and the thinking view never shows.
@@ -858,7 +860,12 @@ export function App() {
             if (p.phase === "thinking") setTokenCount(0);
           },
           onToken: (delta) => setTokenCount((n) => n + delta.length),
-          onEvent: (e) => setEvents((prev) => reduceEvents(prev, e)),
+          onEvent: (e) =>
+            setEvents((prev) => {
+              const next = reduceEvents(prev, e);
+              eventsRef.current = next;
+              return next;
+            }),
           signal: controller.signal,
           tasteContext: (tasteFull ?? "") + tasteClarifyChannel || undefined,
           priorPlaylistContext: priorPlaylistRef.current ?? undefined,
@@ -883,6 +890,7 @@ export function App() {
       // /clear nulls this ref; the next runResolve reads it before overwriting.
       priorPlaylistRef.current = r.resolved.map((t) => `${t.artist} – ${t.title}`);
       void recordTasteSession(r);
+      void recordHistorySession(prompt, r);
       return r;
     } catch (e) {
       // User-initiated cancel is not an error. But a stuck deferred clarify
@@ -929,6 +937,93 @@ export function App() {
       await saveTaste(taste);
     } catch {
       // never block generation on memory failures
+    }
+  }
+
+  // Persist the finished session (prompt + playlist + reasoning transcript)
+  // into history.json, then patch in an LLM-summarized title. The entry is
+  // saved immediately with the playlist name as fallback so a failed/slow
+  // title call never loses the session.
+  async function recordHistorySession(prompt: string, r: ResolvedPlaylist) {
+    if (!config) return;
+    try {
+      const header = new Date().toISOString();
+      const entry: HistoryEntry = {
+        header,
+        prompt,
+        title: r.name || prompt,
+        playlistName: r.name,
+        tracks: r.resolved.map((t) => ({ artist: t.artist, title: t.title })),
+        events: eventsRef.current,
+      };
+      await appendHistory(config, entry);
+      if (!provider) return;
+      const digest = [
+        `Request: ${prompt}`,
+        `Playlist: ${r.name}`,
+        "Tracks:",
+        ...entry.tracks.map((t) => `- ${t.artist} – ${t.title}`),
+      ].join("\n");
+      const title = (await provider.generate(HISTORY_TITLE_SYSTEM, digest)).text
+        .trim()
+        .split("\n")[0]
+        ?.trim();
+      if (title) await updateHistoryTitle(config, header, title.slice(0, 60));
+    } catch {
+      // never block generation on history failures
+    }
+  }
+
+  // /history playback: re-resolve a stored session's tracks against the
+  // current backend (stored entries carry no URIs — the backend may have
+  // changed since) and load them into the normal resolved list, where the
+  // existing playback/save/like flow takes over.
+  async function loadHistorySession(entry: HistoryEntry) {
+    if (!config || loading) return;
+    setHistoryEntries(null);
+    setHistoryDetail(null);
+    setHasInteracted(true);
+    setError(undefined);
+    setLoading(true);
+    setProgress(null);
+    setElapsed(0);
+    setStartTime(Date.now());
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const music = await createMusicProvider(config);
+      const { resolved, unresolved } = await resolveTracks(
+        entry.tracks,
+        music,
+        controller.signal,
+        setProgress,
+      );
+      if (resolved.length === 0) {
+        setError(`no tracks resolved on ${music.name}`);
+        return;
+      }
+      setResolved({
+        name: entry.playlistName || entry.title,
+        description: `Replayed from history: ${entry.prompt}`,
+        resolved,
+        unresolved,
+      });
+      setCommittedPlaylist(null);
+      // No confirm step — the list is immediately playable (Enter plays).
+      setAwaitingConfirm(false);
+      setSelectedIndex(0);
+      priorPlaylistRef.current = resolved.map((t) => `${t.artist} – ${t.title}`);
+      show(`loaded from history · ${resolved.length} tracks — enter to play`);
+    } catch (e) {
+      if (!(controller.signal.aborted || (e instanceof Error && e.name === "AbortError"))) {
+        setError(String(e instanceof Error ? e.message : e));
+      }
+    } finally {
+      abortRef.current = null;
+      disarmEsc();
+      setLoading(false);
+      setProgress(null);
+      setStartTime(null);
     }
   }
 
@@ -1045,12 +1140,6 @@ export function App() {
       setSystemPromptOpen(true);
       return;
     }
-    if (trimmed === "/settings") {
-      setInput("");
-      setSettingsSection(undefined);
-      setSettingsOpen(true);
-      return;
-    }
     if (trimmed === "/save") {
       setInput("");
       if (!resolved) {
@@ -1133,6 +1222,19 @@ export function App() {
       );
       return;
     }
+    if (trimmed === "/history") {
+      setInput("");
+      if (!config) return;
+      const entries = await loadHistory(config);
+      if (entries.length === 0) {
+        setError("no history yet — generate a playlist first");
+        return;
+      }
+      setHistoryDetail(null);
+      // Newest first in the list.
+      setHistoryEntries(entries.slice().reverse());
+      return;
+    }
     if (trimmed === "/forget") {
       setInput("");
       setForgetOpen(true);
@@ -1153,6 +1255,13 @@ export function App() {
       setHasInteracted(true);
       const r = await runResolve(generateRandomPlaylistUser(), []);
       if (r) show(`random playlist ready · ${r.resolved.length} tracks`);
+      return;
+    }
+    // Every real command returned above — anything else starting with "/" is
+    // an unknown/removed command; error instead of feeding it to the agent.
+    if (trimmed.startsWith("/")) {
+      setInput("");
+      setError(`unknown command: ${trimmed.split(/\s+/)[0]}`);
       return;
     }
     if (trimmed.length === 0) {
@@ -1251,7 +1360,7 @@ export function App() {
     !clientIdOpen &&
     !effortPickerOpen &&
     !systemPromptOpen &&
-    !settingsOpen;
+    historyEntries === null;
   // Clarify Q&A gets the same centered treatment as the initial prompt.
   const clarifyActive =
     screen === "main" &&
@@ -1259,7 +1368,6 @@ export function App() {
     !backendPickerOpen &&
     !effortPickerOpen &&
     !systemPromptOpen &&
-    !settingsOpen &&
     clarifyQuestions !== null;
 
   const playingTrack = resolved?.resolved.find((t) => t.uri === currentlyPlayingUri);
@@ -1284,8 +1392,7 @@ export function App() {
           !awaitingConfirm &&
           !clientIdOpen &&
           !effortPickerOpen &&
-          !systemPromptOpen &&
-          !settingsOpen
+          !systemPromptOpen
         }
       />
       {slashMenuOpen && (
@@ -1408,16 +1515,13 @@ export function App() {
           />
         )}
 
-        {screen === "main" && settingsOpen && config && (
-          <SettingsScreen
-            config={config}
-            initialSection={settingsSection}
+        {screen === "main" && historyEntries !== null && (
+          <HistoryScreen
+            entries={historyEntries}
+            detail={historyDetail}
             focused
-            onSave={applySettingsEdit}
-            onClose={() => {
-              setSettingsOpen(false);
-              setSettingsSection(undefined);
-            }}
+            onPick={(entry) => setHistoryDetail(entry)}
+            scrollRef={historyScrollRef}
           />
         )}
 
@@ -1444,7 +1548,7 @@ export function App() {
           !clientIdOpen &&
           !effortPickerOpen &&
           !systemPromptOpen &&
-          !settingsOpen &&
+          historyEntries === null &&
           clarifyQuestions === null && (
             <>
               {centered && inputCluster}

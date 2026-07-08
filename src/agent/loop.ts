@@ -76,6 +76,23 @@ function playlistFromFinalizeArgs(args: Record<string, unknown>): PlaylistRec {
 }
 
 /**
+ * Stable dedup key for a tool call: name + args JSON with object keys sorted,
+ * so `{a,b}` and `{b,a}` collide as intended.
+ */
+function callKey(name: string, args: Record<string, unknown>): string {
+  const sorted = Object.keys(args)
+    .sort()
+    .reduce<Record<string, unknown>>((acc, k) => {
+      acc[k] = args[k];
+      return acc;
+    }, {});
+  return `${name}:${JSON.stringify(sorted)}`;
+}
+
+const DUPLICATE_CALL_WARNING =
+  "[duplicate call — you already called this tool with the same arguments; the result is unchanged and repeated below. Do NOT repeat tool calls; use the results you already have or call finalize_playlist.]";
+
+/**
  * Drive the agent: loop `generate → dispatch tools → feed results back` until
  * either `finalize_playlist` is called or a valid JSON text answer arrives with
  * no tool calls. Bounded by `maxIterations`. All tool dispatch goes through
@@ -96,6 +113,10 @@ export async function runAgentLoop(
   // getArtistTopTracks results). Used as a salvage playlist when the model
   // burns the whole budget without calling finalize_playlist.
   const verifiedTracks: { artist: string; title: string }[] = [];
+  // Successful tool results keyed by call signature. A repeated identical call
+  // is not re-dispatched: the cached result is replayed with a warning so the
+  // model stops looping on the same query. clarify/finalize_playlist exempt.
+  const seenCalls = new Map<string, unknown>();
   const noteVerified = (t: unknown) => {
     const r = t as Record<string, unknown> | null;
     if (r && typeof r === "object" && typeof r.artist === "string" && typeof r.title === "string") {
@@ -161,8 +182,21 @@ export async function runAgentLoop(
         continue;
       }
 
+      const key = call.name === "clarify" ? null : callKey(call.name, call.args);
+      if (key !== null && seenCalls.has(key)) {
+        const cached = seenCalls.get(key);
+        toolTrace[toolTrace.length - 1] = `${call.name} (duplicate)`;
+        opts.callbacks?.onToolResult?.(call.name, cached);
+        opts.onEvent?.({ kind: "tool_result", id: call.id, name: call.name, ok: true, result: cached });
+        resultLines.push(
+          `Tool ${call.name} result (call_id=${call.id}): ${DUPLICATE_CALL_WARNING} ${JSON.stringify(cached)}`,
+        );
+        continue;
+      }
+
       try {
         const result = await dispatchTool(call.name, call.args, opts.deps, opts.signal);
+        if (key !== null) seenCalls.set(key, result);
         if (call.name === "searchTrack") noteVerified(result);
         if (call.name === "getArtistTopTracks" && Array.isArray(result)) result.forEach(noteVerified);
         opts.callbacks?.onToolResult?.(call.name, result);

@@ -17,8 +17,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/systemprompt", description: "set custom system prompt for Claude" },
   { cmd: "/like", description: "remember current track (optional comment)" },
   { cmd: "/memory", description: "show saved taste memory" },
+  { cmd: "/history", description: "browse past sessions & model reasoning" },
   { cmd: "/forget", description: "clear taste memory" },
-  { cmd: "/settings", description: "configure providers & backends (all fields)" },
   { cmd: "/quit", description: "exit vibedeck" },
 ];
 

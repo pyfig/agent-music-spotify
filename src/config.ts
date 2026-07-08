@@ -173,7 +173,7 @@ export function tokensPath(config: Config): string {
 
 // Map every FileConfig key to its env var name so saveConfig can mirror edits
 // into process.env. loadConfig() reads env first (env > file > default), so
-// without this, editing e.g. OPENCODE_API_KEY via /settings while the env var
+// without this, editing e.g. OPENCODE_API_KEY via the /model picker while the env var
 // is set silently no-ops: the file is written but loadConfig() re-reads env
 // and returns the stale value, the provider useMemo reconstructs with the old
 // key, and the user sees no change. Mirroring into env makes the TUI edit win
