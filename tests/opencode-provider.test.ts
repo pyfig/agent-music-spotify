@@ -511,6 +511,21 @@ describe("OpencodeProvider reasoning effort mapping", () => {
     expect(calls[0]!.body.thinking).toBeUndefined();
   });
 
+  test("anthropic: forced tool choice suppresses thinking (Anthropic rejects thinking + forced tool_choice)", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "claude-sonnet-5" });
+    await provider.generate("sys", "hi", undefined, undefined, {
+      tools: MUSIC_AGENT_TOOLS,
+      toolChoice: { name: "clarify" },
+      reasoningEffort: "low",
+    });
+    const body = calls[0]!.body as any;
+    expect(body.tool_choice).toEqual({ type: "tool", name: "clarify" });
+    expect(body.thinking).toBeUndefined();
+    expect(body.max_tokens).toBe(4096);
+  });
+
   test("openai-responses: maps to reasoning.effort ('none' -> 'minimal')", async () => {
     const { calls, respond } = mockFetch();
     respond(sseResponse([JSON.stringify({ type: "response.output_text.delta", delta: "hi" })]));

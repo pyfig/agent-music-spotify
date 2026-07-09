@@ -185,8 +185,11 @@ export class OpencodeProvider implements AgentProvider {
   ): Promise<AgentResult> {
     switch (family) {
       case "anthropic": {
+        // Anthropic rejects extended thinking combined with a forced tool_choice
+        // (thinking only allows tool_choice: auto) — when a forced choice is
+        // present, skip the thinking budget entirely so forcing wins.
         const budget =
-          opts?.reasoningEffort && opts.reasoningEffort !== "none"
+          opts?.reasoningEffort && opts.reasoningEffort !== "none" && !choice
             ? REASONING_BUDGET_TOKENS[opts.reasoningEffort]
             : undefined;
         const baseMax = opts?.maxTokens ?? DEFAULT_MAX_TOKENS;
