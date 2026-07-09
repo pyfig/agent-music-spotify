@@ -491,3 +491,81 @@ describe("OpencodeProvider Retry-After / status propagation", () => {
     expect(caught?.retryAfterMs).toBeUndefined();
   });
 });
+
+describe("OpencodeProvider reasoning effort mapping", () => {
+  test("anthropic: 'low' sets thinking.budget_tokens and raises max_tokens to cover it", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "claude-sonnet-5" });
+    await provider.generate("sys", "hi", undefined, undefined, { reasoningEffort: "low" });
+    const body = calls[0]!.body as any;
+    expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+    expect(body.max_tokens).toBe(4096 + 2048);
+  });
+
+  test("anthropic: 'none' omits the thinking field entirely", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "claude-sonnet-5" });
+    await provider.generate("sys", "hi", undefined, undefined, { reasoningEffort: "none" });
+    expect(calls[0]!.body.thinking).toBeUndefined();
+  });
+
+  test("openai-responses: maps to reasoning.effort ('none' -> 'minimal')", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "response.output_text.delta", delta: "hi" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "gpt-5.5" });
+    await provider.generate("sys", "hi", undefined, undefined, { reasoningEffort: "none" });
+    expect(calls[0]!.body.reasoning).toEqual({ effort: "minimal" });
+  });
+
+  test("openai-compat: maps to reasoning_effort", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "glm-5.2" });
+    await provider.generate("sys", "hi", undefined, undefined, { reasoningEffort: "low" });
+    expect(calls[0]!.body.reasoning_effort).toBe("low");
+  });
+
+  test("google: maps to generationConfig.thinkingConfig.thinkingBudget", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "hi" }] } }] })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "gemini-2.5-pro" });
+    await provider.generate("sys", "hi", undefined, undefined, { reasoningEffort: "high" });
+    expect(calls[0]!.body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 12000 });
+  });
+
+  test("no reasoningEffort set -> no reasoning field on any family (unchanged default behavior)", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "glm-5.2" });
+    await provider.generate("sys", "hi");
+    expect(calls[0]!.body.reasoning_effort).toBeUndefined();
+  });
+
+  test("400 with forced tool_choice AND reasoningEffort degrades by stripping both, retries once", async () => {
+    const bodies: any[] = [];
+    let call = 0;
+    globalThis.fetch = (async (_input: any, init: any) => {
+      bodies.push(JSON.parse(init.body));
+      if (call++ === 0) {
+        return new Response(JSON.stringify({ error: { message: "bad request" } }), { status: 400 });
+      }
+      return sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]);
+    }) as typeof fetch;
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "deepseek-v4-pro" });
+    const result = await provider.generate("sys", "hi", undefined, undefined, {
+      toolChoice: { name: "clarify" },
+      tools: MUSIC_AGENT_TOOLS,
+      reasoningEffort: "low",
+      maxTokens: 100,
+    });
+    expect(result.text).toBe("hi");
+    expect(bodies.length).toBe(2);
+    expect(bodies[0].reasoning_effort).toBe("low");
+    expect(bodies[0].max_completion_tokens).toBe(100);
+    expect(bodies[1].tool_choice).toBe("auto");
+    expect(bodies[1].reasoning_effort).toBeUndefined();
+    expect(bodies[1].max_completion_tokens).toBe(4096);
+  });
+});

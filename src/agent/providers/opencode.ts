@@ -4,6 +4,15 @@ import { toolChoiceForFamily, toolsForFamily } from "../tools";
 /** Provider-local default response cap when the caller doesn't set opts.maxTokens. */
 const DEFAULT_MAX_TOKENS = 4096;
 
+/** Token budget backing each reasoningEffort tier — used directly as
+ * Anthropic's thinking.budget_tokens / Google's thinkingConfig.thinkingBudget. */
+const REASONING_BUDGET_TOKENS: Record<"none" | "low" | "medium" | "high", number> = {
+  none: 0,
+  low: 2048,
+  medium: 6000,
+  high: 12000,
+};
+
 /** Parses a `Retry-After` header (seconds, or an HTTP-date) into a millisecond
  * delay. Returns undefined when the header is absent or unparsable. */
 export function parseRetryAfter(header: string | null): number | undefined {
@@ -143,15 +152,20 @@ export class OpencodeProvider implements AgentProvider {
     // Forced tool choice (e.g. first-turn clarify), in the family's native shape.
     const forced = tools && opts?.toolChoice ? toolChoiceForFamily(family, opts.toolChoice.name) : undefined;
 
-    if (!forced) return this.request(family, headers, label, system, user, tools, undefined, onToken, signal, opts);
     try {
       return await this.request(family, headers, label, system, user, tools, forced, onToken, signal, opts);
     } catch (e) {
       // Some upstreams behind the gateway (e.g. deepseek on the Go tier)
-      // reject any non-"auto" tool_choice with a 400. Forcing is an
-      // optimization, not a contract — degrade to an unforced request.
-      if ((e as { status?: number }).status === 400) {
-        return this.request(family, headers, label, system, user, tools, undefined, onToken, signal, opts);
+      // reject a forced tool_choice, a reasoning knob, or a non-default
+      // max-tokens value with a 400. These are optimizations, not contracts —
+      // degrade once by stripping all three and retry unforced.
+      const status = (e as { status?: number }).status;
+      const degradable = Boolean(forced) || opts?.reasoningEffort !== undefined || opts?.maxTokens !== undefined;
+      if (status === 400 && degradable) {
+        const degraded: GenerateOptions | undefined = opts
+          ? { ...opts, reasoningEffort: undefined, maxTokens: undefined }
+          : opts;
+        return this.request(family, headers, label, system, user, tools, undefined, onToken, signal, degraded);
       }
       throw e;
     }
@@ -171,18 +185,24 @@ export class OpencodeProvider implements AgentProvider {
   ): Promise<AgentResult> {
     switch (family) {
       case "anthropic": {
+        const budget =
+          opts?.reasoningEffort && opts.reasoningEffort !== "none"
+            ? REASONING_BUDGET_TOKENS[opts.reasoningEffort]
+            : undefined;
+        const baseMax = opts?.maxTokens ?? DEFAULT_MAX_TOKENS;
         const res = await fetch(`${this.baseUrl}/messages`, {
           method: "POST",
           signal,
           headers,
           body: JSON.stringify({
             model: this.model,
-            max_tokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
+            max_tokens: budget ? baseMax + budget : baseMax,
             system,
             stream: true,
             messages: [{ role: "user", content: user }],
             ...(tools ? { tools } : {}),
             ...(choice ?? {}),
+            ...(budget ? { thinking: { type: "enabled", budget_tokens: budget } } : {}),
           }),
         });
         if (!res.ok || !res.body) {
@@ -203,6 +223,9 @@ export class OpencodeProvider implements AgentProvider {
             max_output_tokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
             ...(tools ? { tools } : {}),
             ...(choice ?? {}),
+            ...(opts?.reasoningEffort
+              ? { reasoning: { effort: opts.reasoningEffort === "none" ? "minimal" : opts.reasoningEffort } }
+              : {}),
           }),
         });
         if (!res.ok || !res.body) {
@@ -218,7 +241,12 @@ export class OpencodeProvider implements AgentProvider {
           body: JSON.stringify({
             contents: [{ role: "user", parts: [{ text: user }] }],
             systemInstruction: { parts: [{ text: system }] },
-            generationConfig: { maxOutputTokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS },
+            generationConfig: {
+              maxOutputTokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
+              ...(opts?.reasoningEffort
+                ? { thinkingConfig: { thinkingBudget: REASONING_BUDGET_TOKENS[opts.reasoningEffort] } }
+                : {}),
+            },
             ...(tools ? { tools } : {}),
             ...(choice ?? {}),
           }),
@@ -244,6 +272,9 @@ export class OpencodeProvider implements AgentProvider {
             ],
             ...(tools ? { tools, tool_choice: "auto" } : {}),
             ...(choice ?? {}),
+            ...(opts?.reasoningEffort
+              ? { reasoning_effort: opts.reasoningEffort === "none" ? "minimal" : opts.reasoningEffort }
+              : {}),
           }),
         });
         if (!res.ok || !res.body) {

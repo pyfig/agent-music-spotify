@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { runAgentLoop } from "../src/agent/loop";
-import type { AgentEvent, AgentProvider, AgentResult, ToolCall } from "../src/agent/types";
+import type { AgentEvent, AgentProvider, AgentResult, GenerateOptions, ToolCall } from "../src/agent/types";
 import type { MusicProvider, Track } from "../src/music/types";
 
 function fakeTrack(uri: string, artist: string, title: string): Track {
@@ -688,6 +688,67 @@ describe("runAgentLoop retry + backoff", () => {
     const r = await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } });
     expect(r.playlist.name).toBe("X");
     expect(attempts).toBe(2);
+  });
+});
+
+describe("runAgentLoop reasoning-effort policy", () => {
+  test("research turns leave reasoningEffort unset; hard-demand and rescue turns use 'low'", async () => {
+    const optsSeen: (GenerateOptions | undefined)[] = [];
+    const provider: AgentProvider = {
+      name: "capture",
+      generate: async (_system, _user, _onToken, _signal, opts) => {
+        optsSeen.push(opts);
+        return { text: "", toolCalls: [{ id: `c${optsSeen.length}`, name: "searchTrack", args: { artist: "A", title: "B" } }] };
+      },
+    };
+    await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() }, maxIterations: 2 });
+    expect(optsSeen.length).toBe(3); // turn 0 (research), turn 1 (hard-demand), rescue call
+    expect(optsSeen[0]?.reasoningEffort).toBeUndefined();
+    expect(optsSeen[1]?.reasoningEffort).toBe("low");
+    expect(optsSeen[2]?.reasoningEffort).toBe("low");
+    expect(optsSeen[2]?.maxTokens).toBe(2048);
+  });
+
+  test("forced first-turn clarify turn uses reasoningEffort 'low'", async () => {
+    const optsSeen: (GenerateOptions | undefined)[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "capture",
+      generate: async (_system, _user, _onToken, _signal, opts) => {
+        optsSeen.push(opts);
+        call++;
+        if (call === 1) {
+          return { text: "", toolCalls: [{ id: "c1", name: "clarify", args: { question: "Q?", options: ["a", "b", "c"] } }] };
+        }
+        return { text: "", toolCalls: [{ id: "c2", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }] };
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", {
+      deps: { music: fakeMusic(), onClarify: async () => "a" },
+      firstTurnToolChoice: "clarify",
+    });
+    expect(optsSeen[0]?.reasoningEffort).toBe("low");
+    expect(optsSeen[0]?.toolChoice).toEqual({ name: "clarify" });
+    expect(r.playlist.name).toBe("X");
+  });
+
+  test("a bounced-finalize retry turn uses reasoningEffort 'low'", async () => {
+    const optsSeen: (GenerateOptions | undefined)[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "capture",
+      generate: async (_system, _user, _onToken, _signal, opts) => {
+        optsSeen.push(opts);
+        call++;
+        if (call === 1) {
+          return { text: "", toolCalls: [{ id: "c1", name: "finalize_playlist", args: { name: "X", tracks: [], artists: [] } }] };
+        }
+        return { text: "", toolCalls: [{ id: "c2", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }] };
+      },
+    };
+    await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() }, maxIterations: 4 });
+    expect(optsSeen[0]?.reasoningEffort).toBeUndefined();
+    expect(optsSeen[1]?.reasoningEffort).toBe("low");
   });
 });
 

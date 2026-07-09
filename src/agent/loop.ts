@@ -1,7 +1,7 @@
 import type { ClarifyAnswer } from "./prompts";
 import { parsePlaylistResponse, type PlaylistRec } from "./parse";
 import { dispatchTool, MUSIC_AGENT_TOOLS, type ToolDispatcherDeps } from "./tools";
-import type { AgentEvent, AgentProvider, AgentResult, ProviderErrorInfo, ToolCall } from "./types";
+import type { AgentEvent, AgentProvider, AgentResult, GenerateOptions, ProviderErrorInfo, ToolCall } from "./types";
 
 /**
  * The result of running the agent loop to completion: a parsed playlist
@@ -265,10 +265,18 @@ export async function runAgentLoop(
   // bounced back once with instructions to verify — hallucinated titles would
   // otherwise silently drop at resolve time and shrink the playlist.
   let finalizeBounced = false;
+  // Reasoning-effort hint for the NEXT iteration's generate call: mechanical
+  // turns (hard-demand, bounced retries) use "low"; research turns leave it
+  // unset so curation quality doesn't regress. Set at the bottom of an
+  // iteration, consumed at the top of the next one, then reset.
+  let nextEffort: GenerateOptions["reasoningEffort"];
 
   for (let i = 0; i < budget; i++) {
     opts.signal?.throwIfAborted();
     opts.onProgress?.("thinking");
+    const forcedFirstTurn = i === 0 && Boolean(opts.firstTurnToolChoice);
+    const effort: GenerateOptions["reasoningEffort"] = forcedFirstTurn || nextEffort ? "low" : undefined;
+    nextEffort = undefined;
     const result: AgentResult = await generateWithRetry(
       provider,
       system,
@@ -278,9 +286,8 @@ export async function runAgentLoop(
       {
         tools,
         onReasoning: emitReasoning,
-        ...(i === 0 && opts.firstTurnToolChoice
-          ? { toolChoice: { name: opts.firstTurnToolChoice } }
-          : {}),
+        ...(forcedFirstTurn ? { toolChoice: { name: opts.firstTurnToolChoice! } } : {}),
+        ...(effort ? { reasoningEffort: effort } : {}),
       },
     );
     lastText = result.text;
@@ -466,7 +473,13 @@ export async function runAgentLoop(
           `${user}\n\nYou are out of research budget. Call finalize_playlist NOW with your best tracklist based on everything above. It is the only tool available.`,
           opts.onToken,
           opts.signal,
-          { tools: finalizeOnly, onReasoning: emitReasoning, toolChoice: { name: "finalize_playlist" } },
+          {
+            tools: finalizeOnly,
+            onReasoning: emitReasoning,
+            toolChoice: { name: "finalize_playlist" },
+            reasoningEffort: "low",
+            maxTokens: 2048,
+          },
         );
         const rescueFinalize = (rescue.toolCalls ?? []).find((c) => c.name === "finalize_playlist");
         if (rescueFinalize) {
@@ -520,6 +533,7 @@ export async function runAgentLoop(
     // request from scratch every turn.
     const hardDemand = i === budget - 2;
     const softDemand = verifiedTracks.length >= target || stalledTurns >= STALL_LIMIT;
+    nextEffort = bouncedThisTurn || hardDemand ? "low" : undefined;
     const continuation = bouncedThisTurn
       ? "Verify the rejected tracks NOW in ONE batched turn (or swap in verified ones), then call finalize_playlist. Do not restate your analysis of the request."
       : hardDemand

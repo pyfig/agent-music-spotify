@@ -944,9 +944,11 @@ export function App() {
         lines: r.resolved.map((t) => `- ${t.artist} – ${t.title}`),
       });
       if (needsRotation(taste) && provider) {
-        taste = await rotate(taste, (raw) => provider.generate(ROTATE_SYSTEM, raw).then((r) => r.text)).catch(
-          () => taste,
-        );
+        taste = await rotate(taste, (raw) =>
+          provider.generate(ROTATE_SYSTEM, raw, undefined, undefined, { reasoningEffort: "none", maxTokens: 512 }).then(
+            (r) => r.text,
+          ),
+        ).catch(() => taste);
       }
       await saveTaste(taste);
     } catch {
