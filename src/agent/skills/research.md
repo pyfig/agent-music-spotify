@@ -5,4 +5,4 @@ always: true
 triggers:
 ---
 1. If you want to anchor the playlist around an artist named in the request, call searchArtist to resolve their id, then getArtistTopTracks to seed a handful of tracks. Otherwise skip this step.
-2. Use searchTrack to verify each candidate track really exists on the active music backend before committing it. Some models hallucinate track titles — verification is mandatory for borderline picks. A pattern of 3-5 representative verifications is enough for a 20-30 track playlist; you do not need to verify every track one by one.
+2. Use searchTrack to verify every candidate track you are not certain exists on the active music backend. Some models hallucinate track titles — unverified tracks are silently dropped later, shrinking the playlist. Batch ALL searchTrack calls into a single turn: verifying a full 25-track candidate list costs one turn. Prefer dropping an unverified track over shipping it.

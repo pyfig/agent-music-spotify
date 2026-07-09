@@ -355,6 +355,439 @@ describe("runAgentLoop duplicate-call detection", () => {
   });
 });
 
+describe("runAgentLoop dynamic budget", () => {
+  const finalize: AgentResult = {
+    text: "",
+    toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }],
+  };
+
+  /** Provider that searches unique tracks (n per turn) until told to finalize,
+   * capturing every user prompt. */
+  function searchingProvider(perTurn: number): { provider: AgentProvider; prompts: string[] } {
+    const prompts: string[] = [];
+    let turn = 0;
+    const provider: AgentProvider = {
+      name: "searcher",
+      generate: async (_system, user) => {
+        prompts.push(user);
+        if (user.includes("FINAL STEP") || user.includes("enough verified tracks") || user.includes("out of research budget")) return finalize;
+        const t = turn++;
+        return {
+          text: "",
+          toolCalls: Array.from({ length: perTurn }, (_, j) => ({
+            id: `c${t}-${j}`,
+            name: "searchTrack",
+            args: { artist: `A${t}-${j}`, title: `T${t}-${j}` },
+          })),
+        };
+      },
+    };
+    return { provider, prompts };
+  }
+
+  const verifyingMusic = () =>
+    fakeMusic({ searchTrack: async (artist, title) => fakeTrack(`s:${artist}:${title}`, artist, title) });
+
+  test("sufficiency: requested count reached → soft finalize demand early", async () => {
+    const { provider, prompts } = searchingProvider(5);
+    const r = await runAgentLoop(provider, "sys", "playlist of 5 tracks", { deps: { music: verifyingMusic() } });
+    expect(r.playlist.name).toBe("X");
+    // Turn 0 verifies 5 tracks → the very next continuation demands finalize.
+    expect(prompts[1]).toContain("enough verified tracks");
+    expect(prompts[1]).not.toContain("Do not call any other tool");
+    expect(r.iterations).toBeLessThanOrEqual(2);
+  });
+
+  test("default target is 10: 9 verified → continue, 10 → demand", async () => {
+    const nine = searchingProvider(9);
+    await runAgentLoop(nine.provider, "sys", "sad songs", { deps: { music: verifyingMusic() } });
+    expect(nine.prompts[1]).toContain("Now continue");
+
+    const ten = searchingProvider(10);
+    await runAgentLoop(ten.provider, "sys", "sad songs", { deps: { music: verifyingMusic() } });
+    expect(ten.prompts[1]).toContain("enough verified tracks");
+  });
+
+  test("stall: two progressless turns → soft finalize demand despite budget left", async () => {
+    const prompts: string[] = [];
+    let turn = 0;
+    // Every turn repeats the same call; searchTrack returns null so nothing is
+    // ever verified — turn 0 and 1 are progressless, prompt 2 must demand.
+    const provider: AgentProvider = {
+      name: "staller",
+      generate: async (_system, user) => {
+        prompts.push(user);
+        if (user.includes("FINAL STEP") || user.includes("enough verified tracks") || user.includes("out of research budget")) return finalize;
+        turn++;
+        return { text: "", toolCalls: [{ id: `c${turn}`, name: "searchTrack", args: { artist: "A", title: "B" } }] };
+      },
+    };
+    const music = fakeMusic({ searchTrack: async () => null });
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music }, maxIterations: 8 });
+    expect(r.playlist.name).toBe("X");
+    expect(prompts[1]).toContain("Now continue"); // 1 stalled turn: not yet
+    expect(prompts[2]).toContain("enough verified tracks"); // 2 stalled turns: demand
+    expect(r.iterations).toBeLessThanOrEqual(3);
+  });
+
+  test("clarify-only turn extends the budget by one", async () => {
+    // maxIterations=2. Without extension: clarify turn + 1 research turn, the
+    // research turn being also the last → rescue. With extension the provider
+    // gets clarify + research + finalize turns normally.
+    let turn = 0;
+    const provider: AgentProvider = {
+      name: "clarifier",
+      generate: async (_system, user) => {
+        const t = turn++;
+        if (t === 0) {
+          return { text: "", toolCalls: [{ id: "cq", name: "clarify", args: { question: "Era?", options: ["80s"] } }] };
+        }
+        if (t === 1 && !user.includes("out of research budget")) {
+          return { text: "", toolCalls: [{ id: "cs", name: "searchTrack", args: { artist: "A", title: "B" } }] };
+        }
+        return finalize;
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", {
+      deps: { music: verifyingMusic(), onClarify: async (_q, o) => o[0]! },
+      maxIterations: 2,
+    });
+    expect(r.playlist.name).toBe("X");
+    // 3 loop iterations (clarify, search, finalize) — no rescue path needed.
+    expect(r.iterations).toBe(3);
+    expect(r.toolTrace).toEqual(["clarify", "searchTrack", "finalize_playlist"]);
+  });
+});
+
+describe("runAgentLoop finalize verification bounce", () => {
+  const bigFinalize = (id: string): AgentResult => ({
+    text: "",
+    toolCalls: [
+      {
+        id,
+        name: "finalize_playlist",
+        args: {
+          name: "X",
+          tracks: Array.from({ length: 10 }, (_, j) => ({ artist: `A${j}`, title: `T${j}` })),
+          artists: [],
+        },
+      },
+    ],
+  });
+
+  test("mostly-unverified finalize is bounced once, second finalize accepted", async () => {
+    const prompts: string[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "hallucinator",
+      generate: async (_system, user) => {
+        prompts.push(user);
+        call++;
+        return bigFinalize(`cf${call}`);
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } });
+    expect(r.playlist.tracks.length).toBe(10);
+    expect(call).toBe(2); // bounced once, then accepted
+    expect(prompts[1]).toContain("[finalize rejected");
+    expect(prompts[1]).toContain("A0 – T0");
+    expect(prompts[1]).toContain("Verify the rejected tracks NOW");
+  });
+
+  test("no bounce when most tracks are verified", async () => {
+    const music = fakeMusic({
+      searchTrack: async (artist, title) => fakeTrack(`s:${title}`, artist, title),
+    });
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "verifier",
+      generate: async () => {
+        if (call++ === 0) {
+          // Verify 8 of the 10 tracks first.
+          return {
+            text: "",
+            toolCalls: Array.from({ length: 8 }, (_, j) => ({
+              id: `c${j}`,
+              name: "searchTrack",
+              args: { artist: `A${j}`, title: `T${j}` },
+            })),
+          };
+        }
+        return bigFinalize("cf");
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music } });
+    expect(r.playlist.tracks.length).toBe(10);
+    expect(call).toBe(2); // no bounce round-trip
+  });
+
+  test("no bounce for small track lists", async () => {
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "tiny",
+      generate: async () => {
+        call++;
+        return {
+          text: "",
+          toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }],
+        };
+      },
+    };
+    await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } });
+    expect(call).toBe(1);
+  });
+});
+
+describe("runAgentLoop anti-restate continuation", () => {
+  test("normal continuation tells the model not to restate its analysis", async () => {
+    const prompts: string[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "capture",
+      generate: async (_system, user) => {
+        prompts.push(user);
+        if (call++ === 0) {
+          return { text: "", toolCalls: [{ id: "c1", name: "searchTrack", args: { artist: "A", title: "B" } }] };
+        }
+        return {
+          text: "",
+          toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }],
+        };
+      },
+    };
+    await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } });
+    expect(prompts[1]).toContain("Do not restate your analysis");
+  });
+});
+
+describe("runAgentLoop retry + backoff", () => {
+  const finalizeResult: AgentResult = {
+    text: "",
+    toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }],
+  };
+
+  test("transient 429 error retries and the run completes", async () => {
+    let attempts = 0;
+    const provider: AgentProvider = {
+      name: "flaky",
+      generate: async () => {
+        if (attempts++ === 0) throw new Error("provider request failed: 429 Too Many Requests");
+        return finalizeResult;
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } });
+    expect(r.playlist.name).toBe("X");
+    expect(attempts).toBe(2);
+  });
+
+  test("non-transient error throws immediately without retry", async () => {
+    let attempts = 0;
+    const provider: AgentProvider = {
+      name: "broken",
+      generate: async () => {
+        attempts++;
+        throw new Error("invalid api key");
+      },
+    };
+    await expect(
+      runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } }),
+    ).rejects.toThrow("invalid api key");
+    expect(attempts).toBe(1);
+  });
+
+  test("transient error gives up after retries are exhausted", async () => {
+    let attempts = 0;
+    const provider: AgentProvider = {
+      name: "dead",
+      generate: async () => {
+        attempts++;
+        throw new Error("fetch failed");
+      },
+    };
+    await expect(
+      runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } }),
+    ).rejects.toThrow("fetch failed");
+    expect(attempts).toBe(3); // initial + 2 retries
+  }, 10_000);
+});
+
+describe("runAgentLoop tool-result truncation", () => {
+  test("huge tool result is clipped in the follow-up prompt but full in events", async () => {
+    const bigTitle = "x".repeat(5000);
+    const music = fakeMusic({
+      searchTrack: async (artist) => fakeTrack("spotify:track:big", artist, bigTitle),
+    });
+    const userPrompts: string[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "capture",
+      generate: async (_system, user) => {
+        userPrompts.push(user);
+        if (call++ === 0) {
+          return { text: "", toolCalls: [{ id: "c1", name: "searchTrack", args: { artist: "A", title: "B" } }] };
+        }
+        return {
+          text: "",
+          toolCalls: [{ id: "c2", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }],
+        };
+      },
+    };
+    const events: AgentEvent[] = [];
+    await runAgentLoop(provider, "sys", "user", { deps: { music }, onEvent: (e) => events.push(e) });
+    expect(userPrompts[1]).toContain("…[truncated]");
+    // Model-visible line is bounded; the UI event still carries the full title.
+    const resultEvent = events.find((e) => e.kind === "tool_result");
+    expect(resultEvent?.kind).toBe("tool_result");
+    if (resultEvent?.kind === "tool_result") {
+      expect(JSON.stringify(resultEvent.result)).toContain(bigTitle);
+    }
+  });
+});
+
+describe("runAgentLoop result slimming", () => {
+  test("artwork fields are stripped from the prompt but kept in UI events", async () => {
+    const music = fakeMusic({
+      getArtistTopTracks: async () => [
+        { ...fakeTrack("s:1", "A", "T1"), artwork: "https://img.example/very-long-artwork-url-1" },
+        { ...fakeTrack("s:2", "A", "T2"), artwork: "https://img.example/very-long-artwork-url-2" },
+      ] as Track[],
+    });
+    const prompts: string[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "artful",
+      generate: async (_system, user) => {
+        prompts.push(user);
+        if (call++ === 0) {
+          return { text: "", toolCalls: [{ id: "c1", name: "getArtistTopTracks", args: { artistId: "aid" } }] };
+        }
+        return {
+          text: "",
+          toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "T1" }], artists: [] } }],
+        };
+      },
+    };
+    const events: AgentEvent[] = [];
+    await runAgentLoop(provider, "sys", "user", { deps: { music }, onEvent: (e) => events.push(e) });
+    expect(prompts[1]).toContain("T1");
+    expect(prompts[1]).toContain("T2");
+    expect(prompts[1]).not.toContain("artwork");
+    const resultEvent = events.find((e) => e.kind === "tool_result");
+    if (resultEvent?.kind === "tool_result") {
+      expect(JSON.stringify(resultEvent.result)).toContain("artwork");
+    } else {
+      throw new Error("missing tool_result event");
+    }
+  });
+});
+
+describe("runAgentLoop parallel dispatch", () => {
+  test("independent calls in one turn run concurrently, results stay in call order", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const music = fakeMusic({
+      searchTrack: async (artist, title) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 20));
+        inFlight--;
+        return fakeTrack(`spotify:track:${title}`, artist, title);
+      },
+    });
+    const userPrompts: string[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "batcher",
+      generate: async (_system, user) => {
+        userPrompts.push(user);
+        if (call++ === 0) {
+          return {
+            text: "",
+            toolCalls: [
+              { id: "c1", name: "searchTrack", args: { artist: "A", title: "First" } },
+              { id: "c2", name: "searchTrack", args: { artist: "B", title: "Second" } },
+            ],
+          };
+        }
+        return {
+          text: "",
+          toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "First" }], artists: [] } }],
+        };
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music } });
+    expect(r.playlist.name).toBe("X");
+    expect(maxInFlight).toBe(2);
+    // Result lines keep the original call order.
+    const followUp = userPrompts[1]!;
+    expect(followUp.indexOf("First")).toBeLessThan(followUp.indexOf("Second"));
+  });
+
+  test("in-batch duplicate call dispatches once and is marked duplicate", async () => {
+    let searches = 0;
+    const music = fakeMusic({
+      searchTrack: async (artist, title) => {
+        searches++;
+        return fakeTrack("spotify:track:x", artist, title);
+      },
+    });
+    const { provider } = scriptedProvider([
+      {
+        text: "",
+        toolCalls: [
+          { id: "c1", name: "searchTrack", args: { artist: "A", title: "B" } },
+          { id: "c2", name: "searchTrack", args: { artist: "A", title: "B" } },
+        ],
+      },
+      { text: "", toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }] },
+    ]);
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music } });
+    expect(searches).toBe(1);
+    expect(r.toolTrace).toEqual(["searchTrack", "searchTrack (duplicate)", "finalize_playlist"]);
+  });
+});
+
+describe("runAgentLoop context compaction", () => {
+  test("oversized history is folded into a digest and prompt stays bounded", async () => {
+    const bigTitle = "y".repeat(1900); // each result line ~2KB after clipping
+    const music = fakeMusic({
+      searchTrack: async (artist, title) => fakeTrack("spotify:track:big", artist, title),
+    });
+    const userPrompts: string[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "fat",
+      generate: async (_system, user) => {
+        userPrompts.push(user);
+        if (call < 8) {
+          // 3 fat searches per turn (~6KB/block) → threshold crossed by turn 3.
+          const turn = call++;
+          return {
+            text: "",
+            toolCalls: [0, 1, 2].map((j) => ({
+              id: `c${turn}-${j}`,
+              name: "searchTrack",
+              args: { artist: `A${turn}-${j}`, title: `${bigTitle}${turn}${j}` },
+            })),
+          };
+        }
+        return {
+          text: "",
+          toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }],
+        };
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music }, maxIterations: 12 });
+    expect(r.playlist.name).toBe("X");
+    const lastPrompt = userPrompts[userPrompts.length - 1]!;
+    expect(lastPrompt).toContain("[compacted research digest");
+    // Digest + single newest block: prompt must stay well under raw accumulation
+    // (5 turns × ~6KB would exceed 30KB uncompacted).
+    expect(lastPrompt.length).toBeLessThan(20_000);
+    expect(lastPrompt).toContain("Do not repeat these calls");
+  });
+});
+
 describe("runAgentLoop firstTurnToolChoice", () => {
   test("forced tool choice reaches the provider on iteration 0 only", async () => {
     const seenChoices: (string | undefined)[] = [];
