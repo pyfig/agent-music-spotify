@@ -647,6 +647,24 @@ describe("runAgentLoop retry + backoff", () => {
     ).rejects.toThrow(/prompt is too long/);
     expect(attempts).toBe(1);
   });
+
+  test("a transient 500 whose message happens to mention 'context' is still retried (status wins over message-sniffing)", async () => {
+    let attempts = 0;
+    const provider: AgentProvider = {
+      name: "flaky-gateway",
+      generate: async () => {
+        if (attempts++ === 0) {
+          const err = new Error("upstream error: context deadline exceeded") as Error & { status?: number };
+          err.status = 500;
+          throw err;
+        }
+        return finalizeResult;
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } });
+    expect(r.playlist.name).toBe("X");
+    expect(attempts).toBe(2);
+  });
 });
 
 describe("runAgentLoop tool-result truncation", () => {

@@ -106,9 +106,12 @@ const MAX_RETRY_DELAY_MS = 30_000;
 
 function isTransientError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
-  if (CONTEXT_OVERFLOW_RE.test(msg)) return false;
   const status = (e as ProviderErrorInfo | undefined)?.status;
-  if (typeof status === "number") return status === 429 || status >= 500;
+  if (typeof status === "number") {
+    if (status === 400 && CONTEXT_OVERFLOW_RE.test(msg)) return false;
+    return status === 429 || status >= 500;
+  }
+  if (CONTEXT_OVERFLOW_RE.test(msg)) return false;
   return TRANSIENT_ERROR_RE.test(msg);
 }
 
