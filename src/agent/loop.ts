@@ -1,7 +1,7 @@
 import type { ClarifyAnswer } from "./prompts";
 import { parsePlaylistResponse, type PlaylistRec } from "./parse";
 import { dispatchTool, MUSIC_AGENT_TOOLS, type ToolDispatcherDeps } from "./tools";
-import type { AgentEvent, AgentProvider, AgentResult, GenerateOptions, ProviderErrorInfo, ToolCall } from "./types";
+import type { AgentEvent, AgentMessage, AgentProvider, AgentResult, GenerateOptions, ProviderErrorInfo, ToolCall } from "./types";
 
 /**
  * The result of running the agent loop to completion: a parsed playlist
@@ -138,16 +138,22 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * context-overflow errors rethrow immediately.
  */
 async function generateWithRetry(
-  provider: AgentProvider,
+  generate: (
+    system: string,
+    user: string,
+    onToken?: (delta: string) => void,
+    signal?: AbortSignal,
+    opts?: GenerateOptions,
+  ) => Promise<AgentResult>,
   system: string,
   user: string,
   onToken: ((delta: string) => void) | undefined,
   signal: AbortSignal | undefined,
-  genOpts: Parameters<AgentProvider["generate"]>[4],
+  genOpts: GenerateOptions,
 ): Promise<AgentResult> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await provider.generate(system, user, onToken, signal, genOpts);
+      return await generate(system, user, onToken, signal, genOpts);
     } catch (e) {
       if (signal?.aborted || attempt >= RETRY_DELAYS_MS.length || !isTransientError(e)) {
         throw e;
@@ -253,6 +259,12 @@ export async function runAgentLoop(
   // separately so they can be compacted once they outgrow the threshold.
   const baseUser = user;
   let blocks: string[] = [];
+  // Append-only native-transport mirror of the same conversation `blocks`
+  // encodes as a joined string. Only consumed when the provider implements
+  // generateMessages (Task 6+); otherwise it's built but never read — cheap
+  // bookkeeping, not a behavior change. Never rewritten except by compaction
+  // (Phase B3), so a caching provider can key off a stable prefix.
+  const messages: AgentMessage[] = [{ role: "user", content: baseUser }];
 
   // Dynamic budget: starts at maxIterations, extended by clarify-only turns
   // (they gather requirements, not research) up to a hard cap, and effectively
@@ -277,19 +289,29 @@ export async function runAgentLoop(
     const forcedFirstTurn = i === 0 && Boolean(opts.firstTurnToolChoice);
     const effort: GenerateOptions["reasoningEffort"] = forcedFirstTurn || nextEffort ? "low" : undefined;
     nextEffort = undefined;
-    const result: AgentResult = await generateWithRetry(
-      provider,
-      system,
-      user,
-      opts.onToken,
-      opts.signal,
-      {
-        tools,
-        onReasoning: emitReasoning,
-        ...(forcedFirstTurn ? { toolChoice: { name: opts.firstTurnToolChoice! } } : {}),
-        ...(effort ? { reasoningEffort: effort } : {}),
-      },
-    );
+    const genOpts: GenerateOptions = {
+      tools,
+      onReasoning: emitReasoning,
+      ...(forcedFirstTurn ? { toolChoice: { name: opts.firstTurnToolChoice! } } : {}),
+      ...(effort ? { reasoningEffort: effort } : {}),
+    };
+    const result: AgentResult = provider.generateMessages
+      ? await generateWithRetry(
+          (s, _u, tok, sig, o) => provider.generateMessages!(s, messages, tok, sig, o),
+          system,
+          user,
+          opts.onToken,
+          opts.signal,
+          genOpts,
+        )
+      : await generateWithRetry(
+          (s, u, tok, sig, o) => provider.generate(s, u, tok, sig, o),
+          system,
+          user,
+          opts.onToken,
+          opts.signal,
+          genOpts,
+        );
     lastText = result.text;
 
     const calls = result.toolCalls ?? [];
@@ -468,7 +490,7 @@ export async function runAgentLoop(
         opts.onProgress?.("thinking");
         const finalizeOnly = tools.filter((t) => t.name === "finalize_playlist");
         const rescue = await generateWithRetry(
-          provider,
+          (s, u, tok, sig, o) => provider.generate(s, u, tok, sig, o),
           system,
           `${user}\n\nYou are out of research budget. Call finalize_playlist NOW with your best tracklist based on everything above. It is the only tool available.`,
           opts.onToken,
@@ -541,6 +563,16 @@ export async function runAgentLoop(
         : softDemand
           ? "You already have enough verified tracks. Call finalize_playlist next — at most ONE final batched verification turn before it if some picks are still unverified. Do not restate your analysis of the request."
           : "Now continue. If you have enough information, call finalize_playlist. Do not restate your analysis of the request — continue from your previous reasoning; only new thoughts.";
+    messages.push({ role: "assistant", content: lastText, toolCalls: calls });
+    calls.forEach((call, idx) => {
+      const line =
+        call.name === "finalize_playlist"
+          ? JSON.stringify(call.args)
+          : outcomes[idx]!.kind === "error"
+            ? `error: ${(outcomes[idx] as { message: string }).message}`
+            : JSON.stringify(slimResult((outcomes[idx] as { result: unknown }).result));
+      messages.push({ role: "tool", callId: call.id, name: call.name, content: clipResult(line) });
+    });
     blocks.push(`[tool results]\n${resultLines.join("\n")}`);
     // Compaction: when the accumulated research history outgrows the budget,
     // fold everything but the newest block into a deterministic digest —
@@ -573,6 +605,7 @@ export async function runAgentLoop(
       blocks = [digest, blocks[blocks.length - 1]!];
     }
     user = [baseUser, ...blocks, continuation].join("\n\n");
+    messages.push({ role: "user", content: continuation });
   }
 
   // Unreachable: the loop either returns or throws above.

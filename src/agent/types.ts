@@ -19,6 +19,15 @@ export interface AgentResult {
   toolCalls?: ToolCall[];
 }
 
+/** One turn in a native multi-turn transport, for providers that implement
+ * AgentProvider.generateMessages instead of (or in addition to) the joined-
+ * string `generate`. The loop builds this array append-only so a caching
+ * provider can key off a stable prefix. */
+export type AgentMessage =
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string; toolCalls?: ToolCall[] }
+  | { role: "tool"; callId: string; name: string; content: string };
+
 /**
  * One ordered event in the agent's reasoning transcript. Reasoning deltas,
  * tool calls, and tool results are emitted in call order so the UI can render
@@ -61,6 +70,19 @@ export interface AgentProvider {
   generate(
     system: string,
     user: string,
+    onToken?: (delta: string) => void,
+    signal?: AbortSignal,
+    opts?: GenerateOptions,
+  ): Promise<AgentResult>;
+  /** Optional native multi-turn transport. Providers that implement this
+   * receive the full message history each turn instead of one growing user
+   * string, and are the only providers that can carry prompt-cache
+   * breakpoints. Providers without it are dispatched through `generate` with
+   * the loop's existing joined-string transport — behavior is identical to
+   * today. */
+  generateMessages?(
+    system: string,
+    messages: AgentMessage[],
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
     opts?: GenerateOptions,

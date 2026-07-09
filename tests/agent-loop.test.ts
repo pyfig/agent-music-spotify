@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { runAgentLoop } from "../src/agent/loop";
-import type { AgentEvent, AgentProvider, AgentResult, GenerateOptions, ToolCall } from "../src/agent/types";
+import type { AgentEvent, AgentMessage, AgentProvider, AgentResult, GenerateOptions, ToolCall } from "../src/agent/types";
 import type { MusicProvider, Track } from "../src/music/types";
 
 function fakeTrack(uri: string, artist: string, title: string): Track {
@@ -1044,5 +1044,57 @@ describe("runAgentLoop onEvent transcript", () => {
       expect(result.ok).toBe(false);
       expect(result.result).toEqual({ error: "network down" });
     }
+  });
+});
+
+describe("runAgentLoop generateMessages transport (opt-in, zero default behavior change)", () => {
+  test("a provider without generateMessages uses the existing joined-string transport, unchanged", async () => {
+    const userPrompts: string[] = [];
+    const { provider } = scriptedProvider([
+      { text: "", toolCalls: [{ id: "c1", name: "searchTrack", args: { artist: "A", title: "B" } }] },
+      { text: "", toolCalls: [{ id: "c2", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }] },
+    ]);
+    // Wrap to capture the `user` string exactly as generate() receives it today.
+    const capturing: AgentProvider = {
+      name: provider.name,
+      generate: async (system, user, onToken, signal, opts) => {
+        userPrompts.push(user);
+        return provider.generate(system, user, onToken, signal, opts);
+      },
+    };
+    const r = await runAgentLoop(capturing, "sys", "find some tracks", { deps: { music: fakeMusic() } });
+    expect(r.playlist.name).toBe("X");
+    expect(userPrompts[0]).toBe("find some tracks");
+    expect(userPrompts[1]).toContain("[tool results]");
+    expect(userPrompts[1]).toContain("Tool searchTrack result");
+  });
+
+  test("a provider WITH generateMessages is dispatched through it instead of generate, with an append-only message prefix", async () => {
+    const seenPerCall: AgentMessage[][] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "native",
+      generate: async () => {
+        throw new Error("generate() should not be called when generateMessages is present");
+      },
+      generateMessages: async (_system, messages) => {
+        seenPerCall.push(messages.map((m) => ({ ...m })));
+        call++;
+        if (call === 1) {
+          return { text: "", toolCalls: [{ id: "c1", name: "searchTrack", args: { artist: "A", title: "B" } }] };
+        }
+        return { text: "", toolCalls: [{ id: "c2", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }] };
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "find some tracks", { deps: { music: fakeMusic() } });
+    expect(r.playlist.name).toBe("X");
+    expect(seenPerCall.length).toBe(2);
+    // Append-only prefix invariant: everything generateMessages saw on call 1
+    // is still there, unmodified, as a prefix of what it saw on call 2.
+    const prefix = seenPerCall[1]!.slice(0, seenPerCall[0]!.length);
+    expect(prefix).toEqual(seenPerCall[0]!);
+    expect(seenPerCall[1]!.length).toBeGreaterThan(seenPerCall[0]!.length);
+    // First message is always the original request, verbatim.
+    expect(seenPerCall[0]![0]).toEqual({ role: "user", content: "find some tracks" });
   });
 });
