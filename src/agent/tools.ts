@@ -178,6 +178,19 @@ export function normalizeToolArgs(args: Record<string, unknown>): Record<string,
 }
 
 /**
+ * Repairs a mis-cased or underscore/hyphen-swapped tool name against the
+ * known spec list (e.g. "Search_Track" → "searchTrack"). Exact matches pass
+ * through untouched. No match returns the name unchanged — the caller's
+ * unknown-tool branch handles that case with an instructive error.
+ */
+function repairToolName(name: string, specs: ToolSpec[]): string {
+  if (specs.some((s) => s.name === name)) return name;
+  const normalize = (s: string) => s.toLowerCase().replace(/[_\-\s]/g, "");
+  const match = specs.find((s) => normalize(s.name) === normalize(name));
+  return match ? match.name : name;
+}
+
+/**
  * Dispatch a single tool call against the music backend. Throws on unknown tools
  * (so the loop treats it as a transient failure and feeds the error back to the
  * model as a tool-result error). `clarify` is delegated to the supplied callback;
@@ -190,6 +203,7 @@ export async function dispatchTool(
   deps: ToolDispatcherDeps,
   signal?: AbortSignal,
 ): Promise<unknown> {
+  name = repairToolName(name, MUSIC_AGENT_TOOLS);
   args = normalizeToolArgs(args);
   deps.onToolStart?.(name, args);
   signal?.throwIfAborted();
@@ -215,7 +229,9 @@ export async function dispatchTool(
     case "web_search": {
       const query = String(args.query ?? "").trim();
       if (query.length === 0) {
-        throw new Error("web_search requires a non-empty query");
+        throw new Error(
+          `web_search requires a non-empty "query" string. Received: query=${JSON.stringify(args.query)}.`,
+        );
       }
       result = await (deps.webSearch ?? duckDuckGoSearch)(query, signal);
       break;
@@ -234,17 +250,20 @@ export async function dispatchTool(
           /* fall through to validation below */
         }
       }
-      const options = Array.isArray(rawOptions)
-        ? rawOptions.map(String).slice(0, 3)
-        : [];
+      const options = Array.isArray(rawOptions) ? rawOptions.map(String).slice(0, 3) : [];
       if (question.length === 0 || options.length === 0) {
-        throw new Error("clarify requires non-empty question and options");
+        throw new Error(
+          `clarify requires non-empty "question" and exactly 3 "options" strings. ` +
+            `Received: question=${JSON.stringify(args.question)}, options=${JSON.stringify(args.options)}.`,
+        );
       }
       result = await deps.onClarify(question, options);
       break;
     }
-    default:
-      throw new Error(`unknown tool: ${name}`);
+    default: {
+      const names = MUSIC_AGENT_TOOLS.map((s) => s.name).join(", ");
+      throw new Error(`unknown tool: "${name}". Available tools: ${names}.`);
+    }
   }
   deps.onToolEnd?.(name, result);
   return result;

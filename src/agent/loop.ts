@@ -396,27 +396,41 @@ export async function runAgentLoop(
 
     let bouncedThisTurn = false;
     if (finalizeCall) {
-      const playlist = playlistFromFinalizeArgs(finalizeCall.args);
-      const verifiedSet = new Set(
-        verifiedTracks.map((t) => `${t.artist.toLowerCase()}|${t.title.toLowerCase()}`),
-      );
-      const unverified = playlist.tracks.filter(
-        (t) => !verifiedSet.has(`${t.artist.toLowerCase()}|${t.title.toLowerCase()}`),
-      );
-      const budgetLeft = i < budget - 1;
-      // Only bounce substantial lists — the guard targets mass hallucination;
-      // a handful of unverified tracks is cheap to resolve/drop downstream.
-      if (!finalizeBounced && budgetLeft && playlist.tracks.length >= 5 && unverified.length * 2 > playlist.tracks.length) {
-        finalizeBounced = true;
+      let playlist: PlaylistRec | null = null;
+      try {
+        playlist = playlistFromFinalizeArgs(finalizeCall.args);
+      } catch (e) {
+        if (i >= budget - 1) throw e;
         bouncedThisTurn = true;
         stalledTurns = 0; // explicit new instruction — not a stall
+        const msg = e instanceof Error ? e.message : String(e);
         resultLines.push(
-          `[finalize rejected: ${unverified.length} of ${playlist.tracks.length} tracks are unverified and will be dropped if they don't exist. ` +
-            `Verify them with searchTrack — batch ALL of them in ONE turn — or replace them with verified tracks, then call finalize_playlist again. ` +
-            `Unverified: ${unverified.slice(0, 30).map((t) => `${t.artist} – ${t.title}`).join("; ")}]`,
+          `[finalize_playlist rejected: ${msg} Call finalize_playlist again with a non-empty "name" string ` +
+            `and a "tracks" array of {artist,title} objects. Do not restate your analysis of the request.]`,
         );
-      } else {
-        return { playlist, clarifyAnswers, iterations: i + 1, toolTrace };
+      }
+      if (playlist) {
+        const verifiedSet = new Set(
+          verifiedTracks.map((t) => `${t.artist.toLowerCase()}|${t.title.toLowerCase()}`),
+        );
+        const unverified = playlist.tracks.filter(
+          (t) => !verifiedSet.has(`${t.artist.toLowerCase()}|${t.title.toLowerCase()}`),
+        );
+        const budgetLeft = i < budget - 1;
+        // Only bounce substantial lists — the guard targets mass hallucination;
+        // a handful of unverified tracks is cheap to resolve/drop downstream.
+        if (!finalizeBounced && budgetLeft && playlist.tracks.length >= 5 && unverified.length * 2 > playlist.tracks.length) {
+          finalizeBounced = true;
+          bouncedThisTurn = true;
+          stalledTurns = 0; // explicit new instruction — not a stall
+          resultLines.push(
+            `[finalize rejected: ${unverified.length} of ${playlist.tracks.length} tracks are unverified and will be dropped if they don't exist. ` +
+              `Verify them with searchTrack — batch ALL of them in ONE turn — or replace them with verified tracks, then call finalize_playlist again. ` +
+              `Unverified: ${unverified.slice(0, 30).map((t) => `${t.artist} – ${t.title}`).join("; ")}]`,
+          );
+        } else {
+          return { playlist, clarifyAnswers, iterations: i + 1, toolTrace };
+        }
       }
     }
 

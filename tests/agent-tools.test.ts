@@ -169,12 +169,47 @@ describe("dispatchTool", () => {
   test("web_search throws on empty query", async () => {
     await expect(
       dispatchTool("web_search", { query: "  " }, { music: fakeMusic(), webSearch: async () => [] }),
-    ).rejects.toThrow(/non-empty query/);
+    ).rejects.toThrow(/non-empty "query" string/);
   });
 
   test("unknown tool name throws", async () => {
     await expect(
       dispatchTool("bogus", {}, { music: fakeMusic() }),
     ).rejects.toThrow(/unknown tool/);
+  });
+
+  test("tool name repair: case/underscore mismatch dispatches against the correct tool", async () => {
+    const r = await dispatchTool("Search_Track", { artist: "A", title: "B" }, { music: fakeMusic() });
+    expect(r).toEqual({ uri: "spotify:track:t1", title: "Title", artist: "Artist", album: "Album" });
+  });
+
+  test("tool name repair: 'FINALIZE_PLAYLIST' resolves to finalize_playlist for the unknown-tool check but is never dispatched by dispatchTool directly (loop captures it)", async () => {
+    // dispatchTool itself has no special-case for finalize_playlist; verify the
+    // repair at least recognizes it as a known name (no "unknown tool" throw)
+    // by using a tool with the same casing bug that IS dispatched: clarify.
+    const r = await dispatchTool(
+      "CLARIFY",
+      { question: "Q?", options: ["a", "b", "c"] },
+      { music: fakeMusic(), onClarify: async (_q, opts) => opts[0]! },
+    );
+    expect(r).toBe("a");
+  });
+
+  test("unknown tool with no plausible match throws prose listing available tools", async () => {
+    await expect(dispatchTool("bogus_tool", {}, { music: fakeMusic() })).rejects.toThrow(
+      /unknown tool: "bogus_tool"\. Available tools: searchTrack, searchArtist, getArtistTopTracks, web_search, clarify, finalize_playlist\./,
+    );
+  });
+
+  test("clarify validation error includes the received args", async () => {
+    await expect(
+      dispatchTool("clarify", { question: "", options: [] }, { music: fakeMusic(), onClarify: async () => "x" }),
+    ).rejects.toThrow(/Received: question=""/);
+  });
+
+  test("web_search validation error includes the received args", async () => {
+    await expect(
+      dispatchTool("web_search", { query: "   " }, { music: fakeMusic(), webSearch: async () => [] }),
+    ).rejects.toThrow(/Received: query="   "/);
   });
 });

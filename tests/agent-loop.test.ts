@@ -252,12 +252,36 @@ describe("runAgentLoop termination", () => {
     expect(userPrompts[2]).toContain("FINAL STEP");
   });
 
-  test("finalize_playlist args malformed (missing tracks) errors before loop returns", async () => {
+  test("malformed finalize_playlist args bounce back to the model when budget remains", async () => {
+    const userPrompts: string[] = [];
+    let call = 0;
+    const provider: AgentProvider = {
+      name: "capture",
+      generate: async (_system, user) => {
+        userPrompts.push(user);
+        call++;
+        if (call === 1) {
+          return { text: "", toolCalls: [{ id: "c1", name: "finalize_playlist", args: { name: "X", tracks: [], artists: [] } }] };
+        }
+        return {
+          text: "",
+          toolCalls: [{ id: "c2", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }],
+        };
+      },
+    };
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() }, maxIterations: 4 });
+    expect(r.playlist.name).toBe("X");
+    expect(r.playlist.tracks).toEqual([{ artist: "A", title: "B" }]);
+    expect(userPrompts[1]).toContain("finalize_playlist rejected");
+    expect(userPrompts[1]).toContain("missing 'name' or non-empty 'tracks'");
+  });
+
+  test("malformed finalize_playlist args throw once budget is exhausted", async () => {
     const { provider } = scriptedProvider([
       { text: "", toolCalls: [{ id: "c1", name: "finalize_playlist", args: { name: "X", tracks: [], artists: [] } }] },
     ]);
     await expect(
-      runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } }),
+      runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() }, maxIterations: 1 }),
     ).rejects.toThrow(/missing 'name' or non-empty 'tracks'/);
   });
 });
