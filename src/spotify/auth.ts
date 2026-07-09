@@ -2,7 +2,8 @@ import { randomBytes, createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Config } from "../config";
-import { tokensPath } from "../config";
+import { tokensPath, hardenSecretFile, ensureSecretDir } from "../config";
+import { dirname } from "node:path";
 
 const AUTH_URL = "https://accounts.spotify.com/authorize";
 const TOKEN_URL = "https://accounts.spotify.com/api/token";
@@ -191,6 +192,7 @@ function generatePkce(): { verifier: string; challenge: string } {
 }
 
 async function readTokens(config: Config): Promise<Tokens | null> {
+  hardenSecretFile(tokensPath(config));
   try {
     const text = await Bun.file(tokensPath(config)).text();
     return JSON.parse(text) as Tokens;
@@ -199,8 +201,11 @@ async function readTokens(config: Config): Promise<Tokens | null> {
   }
 }
 
-async function writeTokens(config: Config, tokens: Tokens): Promise<void> {
-  await Bun.write(tokensPath(config), JSON.stringify(tokens, null, 2));
+export async function writeTokens(config: Config, tokens: Tokens): Promise<void> {
+  const path = tokensPath(config);
+  ensureSecretDir(dirname(path));
+  await Bun.write(path, JSON.stringify(tokens, null, 2));
+  hardenSecretFile(path);
 }
 
 async function clearTokens(config: Config): Promise<void> {
