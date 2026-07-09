@@ -69,13 +69,9 @@ const webSearchSpec: ToolSpec = {
 const clarifySpec: ToolSpec = {
   name: "clarify",
   description:
-    "Ask the user one clarifying question with 3 concrete options. " +
+    "Ask the user one clarifying question with exactly 3 concrete options. " +
     "The harness surfaces this in the TUI and returns the user's chosen answer " +
-    "(one of the options or a custom free-text answer). Prefer calling this FIRST, " +
-    "before any search tools, whenever genre, era, mood, energy, or language is not " +
-    "pinned down by the request — it is cheap for the user, and skipping it produces " +
-    "generic playlists. Call at most once per request with a single question; do not " +
-    "batch multiple questions.",
+    "(one of the options, or a custom free-text answer).",
   parameters: {
     type: "object",
     properties: {
@@ -95,18 +91,17 @@ const clarifySpec: ToolSpec = {
 const finalizePlaylistSpec: ToolSpec = {
   name: "finalize_playlist",
   description:
-    "Commit the final playlist. Call exactly once, as the last agent step. " +
-    "The harness stops the loop on this call. `tracks` should be the full " +
-    "ordered tracklist; `artists` lists artist names the user explicitly named " +
-    "in their request (use an empty array if none were named).",
+    "Commit the final playlist. Call exactly once, as the last agent step — " +
+    "the harness stops the loop on this call. `tracks` is the full ordered " +
+    "tracklist; `artists` lists only artists the user explicitly named in " +
+    "their request (empty array if none).",
   parameters: {
     type: "object",
     properties: {
       name: { type: "string", description: "Short evocative playlist title fitting the request." },
       tracks: {
         type: "array",
-        description: "Ordered track list. 20-30 tracks by many different artists (no more than 2-3 per artist). " +
-          "Artist names and titles in their original script, never transliterated.",
+        description: "Ordered track list. No more than 2-3 tracks per artist.",
         items: {
           type: "object",
           properties: {

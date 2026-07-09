@@ -38,6 +38,20 @@ describe("tool spec surface", () => {
     const finalize = MUSIC_AGENT_TOOLS.find((t) => t.name === "finalize_playlist")!;
     expect(finalize.parameters.required).toEqual(["name", "tracks", "artists"]);
   });
+
+  test("clarify description is mechanical only — policy lives in the clarify.md skill", () => {
+    const clarify = MUSIC_AGENT_TOOLS.find((t) => t.name === "clarify")!;
+    expect(clarify.description).not.toMatch(/prefer calling this first/i);
+    expect(clarify.description).not.toMatch(/skipping it produces generic playlists/i);
+    expect(clarify.description.length).toBeLessThan(220);
+  });
+
+  test("finalize_playlist description keeps the load-bearing 'call exactly once, last step' contract", () => {
+    const finalize = MUSIC_AGENT_TOOLS.find((t) => t.name === "finalize_playlist")!;
+    expect(finalize.description).toMatch(/call exactly once/i);
+    expect(finalize.description).toMatch(/last agent step/i);
+    expect(finalize.description).not.toMatch(/artist names and titles in their original script/i);
+  });
 });
 
 describe("toolsForFamily transforms", () => {
