@@ -609,6 +609,44 @@ describe("runAgentLoop retry + backoff", () => {
     ).rejects.toThrow("fetch failed");
     expect(attempts).toBe(3); // initial + 2 retries
   }, 10_000);
+
+  test("429 with retryAfterMs from a Retry-After header uses that delay, not the default schedule", async () => {
+    let attempts = 0;
+    const provider: AgentProvider = {
+      name: "flaky",
+      generate: async () => {
+        if (attempts++ === 0) {
+          const err = new Error("rate limited") as Error & { status?: number; retryAfterMs?: number };
+          err.status = 429;
+          err.retryAfterMs = 10;
+          throw err;
+        }
+        return finalizeResult;
+      },
+    };
+    const start = Date.now();
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } });
+    expect(r.playlist.name).toBe("X");
+    expect(attempts).toBe(2);
+    expect(Date.now() - start).toBeLessThan(400);
+  });
+
+  test("400 'prompt is too long' is never retried even though attempts remain", async () => {
+    let attempts = 0;
+    const provider: AgentProvider = {
+      name: "overflow",
+      generate: async () => {
+        attempts++;
+        const err = new Error("upstream 400: prompt is too long for this model") as Error & { status?: number };
+        err.status = 400;
+        throw err;
+      },
+    };
+    await expect(
+      runAgentLoop(provider, "sys", "user", { deps: { music: fakeMusic() } }),
+    ).rejects.toThrow(/prompt is too long/);
+    expect(attempts).toBe(1);
+  });
 });
 
 describe("runAgentLoop tool-result truncation", () => {

@@ -1,5 +1,22 @@
-import type { AgentProvider, AgentResult, GenerateOptions, ToolCall } from "../types";
+import type { AgentProvider, AgentResult, GenerateOptions, ProviderErrorInfo, ToolCall } from "../types";
 import { toolChoiceForFamily, toolsForFamily } from "../tools";
+
+/** Provider-local default response cap when the caller doesn't set opts.maxTokens. */
+const DEFAULT_MAX_TOKENS = 4096;
+
+/** Parses a `Retry-After` header (seconds, or an HTTP-date) into a millisecond
+ * delay. Returns undefined when the header is absent or unparsable. */
+export function parseRetryAfter(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const secs = Number(header);
+  if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
+  const at = Date.parse(header);
+  if (!Number.isNaN(at)) {
+    const ms = at - Date.now();
+    return ms > 0 ? ms : 0;
+  }
+  return undefined;
+}
 
 export interface OpencodeProviderConfig {
   /** Stable provider id surfaced in the UI & config: "opencode-go" | "opencode-zen". */
@@ -70,9 +87,11 @@ export class OpencodeProvider implements AgentProvider {
   /** Turns a failed HTTP response into an actionable Error, with extra detail on 401/403. */
   private async requestFailed(res: Response): Promise<Error> {
     const body = (await res.text()).slice(0, 500);
+    const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));
     const fail = (message: string): Error => {
-      const err = new Error(message) as Error & { status?: number };
+      const err = new Error(message) as Error & ProviderErrorInfo;
       err.status = res.status;
+      if (retryAfterMs !== undefined) err.retryAfterMs = retryAfterMs;
       return err;
     };
     if (res.status === 401 || res.status === 403) {
@@ -158,7 +177,7 @@ export class OpencodeProvider implements AgentProvider {
           headers,
           body: JSON.stringify({
             model: this.model,
-            max_tokens: 4096,
+            max_tokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
             system,
             stream: true,
             messages: [{ role: "user", content: user }],
@@ -181,6 +200,7 @@ export class OpencodeProvider implements AgentProvider {
             instructions: system,
             input: user,
             stream: true,
+            max_output_tokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
             ...(tools ? { tools } : {}),
             ...(choice ?? {}),
           }),
@@ -198,6 +218,7 @@ export class OpencodeProvider implements AgentProvider {
           body: JSON.stringify({
             contents: [{ role: "user", parts: [{ text: user }] }],
             systemInstruction: { parts: [{ text: system }] },
+            generationConfig: { maxOutputTokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS },
             ...(tools ? { tools } : {}),
             ...(choice ?? {}),
           }),
@@ -216,6 +237,7 @@ export class OpencodeProvider implements AgentProvider {
           body: JSON.stringify({
             model: this.model,
             stream: true,
+            max_completion_tokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
             messages: [
               { role: "system", content: system },
               { role: "user", content: user },

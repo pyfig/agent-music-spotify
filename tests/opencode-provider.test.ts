@@ -424,3 +424,70 @@ describe("OpencodeProvider tool-calling: opts.tools makes the request carry tool
     expect(body.tool_choice).toBeUndefined();
   });
 });
+
+describe("OpencodeProvider max output tokens", () => {
+  test("anthropic: body.max_tokens defaults to 4096, honors opts.maxTokens", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "claude-sonnet-5" });
+    await provider.generate("sys", "hi");
+    expect(calls[0]!.body.max_tokens).toBe(4096);
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    await provider.generate("sys", "hi", undefined, undefined, { maxTokens: 2048 });
+    expect(calls[1]!.body.max_tokens).toBe(2048);
+  });
+
+  test("openai-responses: body.max_output_tokens set from opts.maxTokens", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "response.output_text.delta", delta: "hi" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "gpt-5.5" });
+    await provider.generate("sys", "hi", undefined, undefined, { maxTokens: 1024 });
+    expect(calls[0]!.body.max_output_tokens).toBe(1024);
+  });
+
+  test("openai-compat: body.max_completion_tokens set from opts.maxTokens", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "glm-5.2" });
+    await provider.generate("sys", "hi", undefined, undefined, { maxTokens: 1024 });
+    expect(calls[0]!.body.max_completion_tokens).toBe(1024);
+  });
+
+  test("google: body.generationConfig.maxOutputTokens set from opts.maxTokens", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "hi" }] } }] })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "gemini-2.5-pro" });
+    await provider.generate("sys", "hi", undefined, undefined, { maxTokens: 1024 });
+    expect(calls[0]!.body.generationConfig.maxOutputTokens).toBe(1024);
+  });
+});
+
+describe("OpencodeProvider Retry-After / status propagation", () => {
+  test("429 response attaches status and retryAfterMs (numeric seconds) to the thrown error", async () => {
+    const { respond } = mockFetch();
+    respond(new Response("rate limited", { status: 429, headers: { "retry-after": "2" } }));
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "glm-5.2" });
+    let caught: (Error & { status?: number; retryAfterMs?: number }) | undefined;
+    try {
+      await provider.generate("sys", "hi");
+    } catch (e) {
+      caught = e as Error & { status?: number; retryAfterMs?: number };
+    }
+    expect(caught?.status).toBe(429);
+    expect(caught?.retryAfterMs).toBe(2000);
+  });
+
+  test("missing Retry-After header leaves retryAfterMs undefined", async () => {
+    const { respond } = mockFetch();
+    respond(new Response("server error", { status: 500 }));
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "glm-5.2" });
+    let caught: (Error & { status?: number; retryAfterMs?: number }) | undefined;
+    try {
+      await provider.generate("sys", "hi");
+    } catch (e) {
+      caught = e as Error & { status?: number; retryAfterMs?: number };
+    }
+    expect(caught?.status).toBe(500);
+    expect(caught?.retryAfterMs).toBeUndefined();
+  });
+});

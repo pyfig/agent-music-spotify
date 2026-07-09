@@ -1,7 +1,7 @@
 import type { ClarifyAnswer } from "./prompts";
 import { parsePlaylistResponse, type PlaylistRec } from "./parse";
 import { dispatchTool, MUSIC_AGENT_TOOLS, type ToolDispatcherDeps } from "./tools";
-import type { AgentEvent, AgentProvider, AgentResult, ToolCall } from "./types";
+import type { AgentEvent, AgentProvider, AgentResult, ProviderErrorInfo, ToolCall } from "./types";
 
 /**
  * The result of running the agent loop to completion: a parsed playlist
@@ -92,10 +92,25 @@ function callKey(name: string, args: Record<string, unknown>): string {
 const DUPLICATE_CALL_WARNING =
   "[duplicate call — you already called this tool with the same arguments; the result is unchanged and repeated below. Do NOT repeat tool calls; use the results you already have or call finalize_playlist.]";
 
-/** Provider errors worth retrying: rate limits, server errors, network flakes. */
+/** Provider errors worth retrying via message-sniffing, for providers that
+ * don't attach ProviderErrorInfo (ollama, claude-cli, raw network failures). */
 const TRANSIENT_ERROR_RE = /\b(429|5\d\d)\b|ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed/i;
-/** Backoff schedule between generate retries (a little jitter is added). */
+/** Context-overflow errors are never retryable — a bigger prompt won't fit
+ * next attempt either, so retrying just burns the budget on the same 400. */
+const CONTEXT_OVERFLOW_RE = /context|too long|maximum.{0,20}tokens|prompt is too long/i;
+/** Backoff schedule between generate retries (a little jitter is added) when
+ * the provider didn't supply a Retry-After hint. */
 const RETRY_DELAYS_MS = [500, 1500];
+/** Upper bound on any single retry delay, including a provider's Retry-After. */
+const MAX_RETRY_DELAY_MS = 30_000;
+
+function isTransientError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (CONTEXT_OVERFLOW_RE.test(msg)) return false;
+  const status = (e as ProviderErrorInfo | undefined)?.status;
+  if (typeof status === "number") return status === 429 || status >= 500;
+  return TRANSIENT_ERROR_RE.test(msg);
+}
 
 /** Abortable sleep: resolves after ms or rejects as soon as the signal fires. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -115,8 +130,9 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 /**
  * provider.generate with retry+backoff on transient errors (429/5xx/network),
- * so one rate-limit blip doesn't kill an otherwise healthy run. Abort and
- * non-transient errors rethrow immediately.
+ * so one rate-limit blip doesn't kill an otherwise healthy run. Honors a
+ * provider-supplied Retry-After delay when present; abort, non-transient, and
+ * context-overflow errors rethrow immediately.
  */
 async function generateWithRetry(
   provider: AgentProvider,
@@ -130,11 +146,15 @@ async function generateWithRetry(
     try {
       return await provider.generate(system, user, onToken, signal, genOpts);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (signal?.aborted || attempt >= RETRY_DELAYS_MS.length || !TRANSIENT_ERROR_RE.test(msg)) {
+      if (signal?.aborted || attempt >= RETRY_DELAYS_MS.length || !isTransientError(e)) {
         throw e;
       }
-      await sleep(RETRY_DELAYS_MS[attempt]! + Math.random() * 250, signal);
+      const retryAfterMs = (e as ProviderErrorInfo | undefined)?.retryAfterMs;
+      const delay =
+        typeof retryAfterMs === "number"
+          ? Math.min(retryAfterMs, MAX_RETRY_DELAY_MS)
+          : RETRY_DELAYS_MS[attempt]! + Math.random() * 250;
+      await sleep(delay, signal);
     }
   }
 }

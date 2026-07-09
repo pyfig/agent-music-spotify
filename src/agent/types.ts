@@ -38,6 +38,22 @@ export interface GenerateOptions {
   /** Force the model to call this specific tool on this generation. Providers
    * without a native tool-choice mechanism ignore it (graceful degradation). */
   toolChoice?: { name: string };
+  /** Cap on response tokens. Providers map this to their family's field name
+   * (max_tokens / max_output_tokens / max_completion_tokens / generationConfig.maxOutputTokens).
+   * Falls back to a provider-local default (4096) when unset. */
+  maxTokens?: number;
+  /** Hint for how much the model should "think" before answering. Providers
+   * without a native knob ignore it. Mechanical turns (rescue, hard-demand,
+   * bounced retries, forced first-turn clarify) use "low"; research turns
+   * leave this undefined so curation quality doesn't regress. */
+  reasoningEffort?: "none" | "low" | "medium" | "high";
+}
+
+/** Optional metadata a provider attaches to a thrown Error so loop.ts's
+ * retry policy can act on real signals instead of message-sniffing alone. */
+export interface ProviderErrorInfo {
+  status?: number;
+  retryAfterMs?: number;
 }
 
 export interface AgentProvider {

@@ -1,6 +1,8 @@
-import type { AgentProvider, AgentResult, GenerateOptions } from "../types";
-import { consumeSseStream } from "./opencode";
+import type { AgentProvider, AgentResult, GenerateOptions, ProviderErrorInfo } from "../types";
+import { consumeSseStream, parseRetryAfter } from "./opencode";
 import { toolChoiceForFamily, toolsForOpenAIChat } from "../tools";
+
+const DEFAULT_MAX_TOKENS = 4096;
 
 /** Strips paste artifacts (whitespace, wrapping quotes, "Bearer " prefix) that turn a valid key into a rejected one. */
 function sanitizeCredential(value: string): string {
@@ -90,6 +92,7 @@ export class OpenAIProvider implements AgentProvider {
       body: JSON.stringify({
         model: this.model,
         stream: true,
+        max_completion_tokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -101,9 +104,12 @@ export class OpenAIProvider implements AgentProvider {
       }),
     });
     if (!res.ok || !res.body) {
-      throw new Error(
-        `openai request failed: ${res.status} ${await res.text()}`,
-      );
+      const body = (await res.text()).slice(0, 500);
+      const err = new Error(`openai request failed: ${res.status} ${body}`) as Error & ProviderErrorInfo;
+      err.status = res.status;
+      const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));
+      if (retryAfterMs !== undefined) err.retryAfterMs = retryAfterMs;
+      throw err;
     }
     return consumeSseStream(res.body, onToken, "openai", opts?.onReasoning, Boolean(toolsPayload));
   }
