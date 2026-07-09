@@ -28,7 +28,7 @@ The installer ensures Bun is present, installs dependencies, and links an `amusi
 
 Spotify connects automatically on first run: a built-in client ID + PKCE flow opens your browser for consent — nothing to type. Tokens are cached and auto-refreshed at `~/.config/spotify-harness-tui/tokens.json`.
 
-The built-in client ID is shared and its API quota can run out (you'll see a `429` error). Use your own Spotify app instead — run `/clientid` inside the TUI, it walks you through creating the app and saves the ID. Manual alternatives: set `SPOTIFY_CLIENT_ID` or put `spotifyClientId` in `~/.config/spotify-harness-tui/config.json` (redirect URI must be `http://127.0.0.1:8888/callback`; no client secret needed).
+The built-in client ID is shared and its API quota can run out (you'll see a `429` error). Use your own Spotify app instead — run `/clientid` inside the TUI, it walks you through creating the app and saves the ID. Manual alternatives: set `SPOTIFY_CLIENT_ID` or put `spotifyClientId` in `~/.config/spotify-harness-tui/config.json` (redirect URI must be `http://127.0.0.1/callback` — loopback without a port; the app binds an ephemeral port at login time per Spotify's loopback-redirect rules; no client secret needed).
 
 ## Usage
 

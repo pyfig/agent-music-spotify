@@ -27,7 +27,7 @@ export function ClientIdPrompt({
         1. open <a href="https://developer.spotify.com/dashboard">developer.spotify.com/dashboard</a> (ctrl+o) →
         Create app
       </text>
-      <text fg={theme.subtext}>2. Redirect URI: http://127.0.0.1:8888/callback · API: Web API</text>
+      <text fg={theme.subtext}>2. Redirect URI: http://127.0.0.1/callback (no port) · API: Web API</text>
       <text fg={theme.subtext}>3. copy the Client ID (32 hex chars), paste below (cmd+v)</text>
       <text fg={theme.muted}>
         current: {currentId}

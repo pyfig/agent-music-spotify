@@ -71,7 +71,7 @@ Audit: `grep -c FOO src/config.ts AGENTS.md README.md` — all three should be �
 
 `SCOPES` (top of `src/spotify/auth.ts`) feeds `scopesSatisfy()`. Cached tokens whose scopes don't cover current `SCOPES` are **deleted**, forcing a full browser re-login for every user. Changing `SCOPES` also **breaks the driver fixtures** — update the tokens heredoc in `.claude/skills/run-vibedeck/driver.sh` in the same commit. Checklist: justify new scope in commit body → `bun test` (scope-mismatch cases in `tests/auth.test.ts`) → update driver.sh heredoc → `driver.sh start` once, confirm status bar shows `spotify ✓`.
 
-`src/spotify/auth.ts` has the most incident history of any file (WSL browser launch via `powershell.exe`, port-8888 zombie-killer heuristic, scope-mismatch invalidation). Don't "simplify" the platform ladder in `openBrowser()`.
+`src/spotify/auth.ts` has the most incident history of any file (WSL browser launch via `powershell.exe`, scope-mismatch invalidation; the old port-8888 zombie-killer was replaced by an ephemeral-port listener). Don't "simplify" the platform ladder in `openBrowser()`.
 
 ## Architecture
 
@@ -96,7 +96,7 @@ src/
     soundcloud/             auth.ts (client_id scraping), client.ts
     ytmusic/                client.ts (wraps ytmusic-api)
   spotify/
-    auth.ts                 PKCE flow, token cache, scope check, port-8888 listener
+    auth.ts                 PKCE flow, token cache, scope check, ephemeral-port loopback listener
     client.ts               Spotify Web API: search/playlists/playback, 429 handling
   core/
     generate-playlist.ts    agent-loop entry + legacy worker-pool URI resolve + named-artists merge

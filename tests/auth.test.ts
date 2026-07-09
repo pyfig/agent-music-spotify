@@ -2,7 +2,7 @@ import { describe, expect, test, mock, beforeEach } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync, rmSync } from "node:fs";
-import { scopesSatisfy } from "../src/spotify/auth";
+import { scopesSatisfy, redirectUri } from "../src/spotify/auth";
 
 const OLD_SCOPES = "user-read-playback-state";
 const CURRENT_SCOPES = [
@@ -12,6 +12,12 @@ const CURRENT_SCOPES = [
   "user-read-playback-state",
   "user-library-modify",
 ].join(" ");
+
+describe("loopback redirect URI", () => {
+  test("embeds the ephemeral port on the loopback IP literal", () => {
+    expect(redirectUri(53211)).toBe("http://127.0.0.1:53211/callback");
+  });
+});
 
 describe("scope mismatch re-auth logic", () => {
   test("missing scopes field → triggers re-auth", async () => {
