@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
   appendHistory,
   HISTORY_LIMIT,
+  historyEntryToText,
+  historyReasoningToText,
   historyPath,
   loadHistory,
   updateHistoryTitle,
@@ -79,6 +81,28 @@ describe("history persistence", () => {
     await updateHistoryTitle(config, "h2", "Summarized");
     const loaded = await loadHistory(config);
     expect(loaded.map((e) => e.title)).toEqual(["one", "Summarized"]);
+  });
+
+  test("historyEntryToText formats title, prompt, and track lines", () => {
+    const e = entry("h1", "Night Drive");
+    expect(historyEntryToText(e)).toBe("Night Drive\nRequest: sad songs\n\nA – B");
+  });
+
+  test("historyReasoningToText renders reasoning verbatim and tools compact", () => {
+    const e: HistoryEntry = {
+      ...entry("h1", "Night Drive"),
+      events: [
+        { kind: "reasoning", delta: "User wants synthwave.\nPicking classics." },
+        { kind: "tool_call", id: "c1", name: "searchTrack", args: { artist: "Kavinsky", title: "Nightcall" } },
+        { kind: "tool_result", id: "c1", name: "searchTrack", ok: true, result: { uri: "s:x", title: "y".repeat(300) } },
+      ],
+    };
+    const text = historyReasoningToText(e);
+    expect(text).toContain("User wants synthwave.\nPicking classics.");
+    expect(text).toContain('⏺ searchTrack {"artist":"Kavinsky","title":"Nightcall"}');
+    expect(text).toContain("⎿ ✓ ");
+    expect(text).toContain("…"); // long tool result clipped
+    expect(text.startsWith("Night Drive\nRequest: sad songs")).toBe(true);
   });
 
   test("updateHistoryTitle no-ops for a missing header", async () => {

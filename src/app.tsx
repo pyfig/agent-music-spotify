@@ -65,10 +65,13 @@ import { HistoryScreen } from "./ui/HistoryScreen";
 import {
   appendHistory,
   HISTORY_TITLE_SYSTEM,
+  historyEntryToText,
+  historyReasoningToText,
   loadHistory,
   updateHistoryTitle,
   type HistoryEntry,
 } from "./core/history";
+import { copyToClipboard } from "./core/clipboard";
 import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
 import { barParts, theme, truncateLabel } from "./ui/theme";
@@ -424,6 +427,17 @@ export function App() {
         else if (key.name === "pagedown") box?.scrollBy(0.5, "viewport");
         else if (key.name === "escape") setHistoryDetail(null);
         else if (key.name === "return") void loadHistorySession(historyDetail);
+        else if (key.name === "c" && !key.ctrl) {
+          const entry = historyDetail;
+          void copyToClipboard(historyReasoningToText(entry))
+            .then(() => show("copied reasoning"))
+            .catch((e) => setError(String(e instanceof Error ? e.message : e)));
+        } else if (key.name === "t" && !key.ctrl) {
+          const entry = historyDetail;
+          void copyToClipboard(historyEntryToText(entry))
+            .then(() => show(`copied ${entry.tracks.length} tracks`))
+            .catch((e) => setError(String(e instanceof Error ? e.message : e)));
+        }
         return;
       }
       if (key.name === "escape") setHistoryEntries(null);
@@ -1516,13 +1530,22 @@ export function App() {
         )}
 
         {screen === "main" && historyEntries !== null && (
-          <HistoryScreen
-            entries={historyEntries}
-            detail={historyDetail}
-            focused
-            onPick={(entry) => setHistoryDetail(entry)}
-            scrollRef={historyScrollRef}
-          />
+          <>
+            <HistoryScreen
+              entries={historyEntries}
+              detail={historyDetail}
+              focused
+              onPick={(entry) => setHistoryDetail(entry)}
+              scrollRef={historyScrollRef}
+            />
+            {/* Main-region toast row is hidden while the overlay is up — show
+                copy/feedback toasts here so `c` gives visible confirmation. */}
+            {toast && (
+              <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
+                <text fg={theme.green}> ✓ {toast.msg}</text>
+              </box>
+            )}
+          </>
         )}
 
         {screen === "main" && !pickerOpen && clarifyQuestions !== null && (

@@ -70,7 +70,7 @@ export function HistoryScreen({ entries, detail, focused, onPick, scrollRef }: H
           )}
         </scrollbox>
         <box style={{ height: 1, flexShrink: 0 }}>
-          <text fg={theme.muted}>enter — load tracks & listen · esc — back</text>
+          <text fg={theme.muted}>enter — load & listen · c — copy reasoning · t — copy tracks · esc — back</text>
         </box>
       </box>
     );
