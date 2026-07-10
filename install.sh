@@ -16,10 +16,16 @@ if [[ -n "${BASH_SOURCE[0]:-}" && -f "$(dirname "${BASH_SOURCE[0]}")/package.jso
 else
   if [[ -d "${CLONE_DIR}/.git" ]]; then
     echo "updating ${CLONE_DIR}…"
-    git -C "${CLONE_DIR}" pull --ff-only
+    git -C "${CLONE_DIR}" fetch --tags origin
   else
     echo "cloning ${REPO_URL} → ${CLONE_DIR}…"
-    git clone --depth 1 "${REPO_URL}" "${CLONE_DIR}"
+    git clone "${REPO_URL}" "${CLONE_DIR}"
+  fi
+  # Pin to the latest release tag; fall back to default branch tip if none.
+  LATEST_TAG="$(git -C "${CLONE_DIR}" tag -l 'v*' --sort=-v:refname | head -1)"
+  if [[ -n "${LATEST_TAG}" ]]; then
+    echo "checking out ${LATEST_TAG}…"
+    git -C "${CLONE_DIR}" checkout --quiet "${LATEST_TAG}"
   fi
   REPO_DIR="${CLONE_DIR}"
 fi
@@ -40,40 +46,50 @@ cat > "${BIN_DIR}/amusic" <<EOF
 #!/usr/bin/env bash
 REPO_DIR="${REPO_DIR}"
 
+# Auto-update to the latest GitHub release tag (v*), checked at most once
+# per day. Only runs on managed clones (~/.local/share/amusic), never on a
+# dev checkout, and never over local changes.
+UPDATE_STAMP="\${REPO_DIR}/.update-checked"
+
 check_and_update() {
   command -v git >/dev/null 2>&1 || return 0
   [ -d "\${REPO_DIR}/.git" ] || return 0
+  case "\${REPO_DIR}" in
+    "\${HOME}/.local/share/amusic") ;;
+    *) return 0 ;;  # dev checkout — leave it alone
+  esac
   cd "\${REPO_DIR}" 2>/dev/null || return 0
+
+  # Throttle: skip if we checked within the last 24h.
+  if [ -f "\${UPDATE_STAMP}" ] && [ -n "\$(find "\${UPDATE_STAMP}" -mmin -1440 2>/dev/null)" ]; then
+    return 0
+  fi
 
   if [ -n "\$(git status --porcelain 2>/dev/null)" ]; then
     echo "amusic: local changes detected, skipping update"
     return 0
   fi
 
-  local branch local_sha remote_sha
-  branch="\$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  [ -n "\${branch}" ] || return 0
-
-  if ! git fetch --quiet origin "\${branch}" 2>/dev/null; then
+  if ! git fetch --quiet --tags origin 2>/dev/null; then
     echo "amusic: fetch failed (offline?), running local version"
     return 0
   fi
+  touch "\${UPDATE_STAMP}" 2>/dev/null
 
-  local_sha="\$(git rev-parse HEAD 2>/dev/null)"
-  remote_sha="\$(git rev-parse "origin/\${branch}" 2>/dev/null)"
-  [ -n "\${local_sha}" ] && [ -n "\${remote_sha}" ] || return 0
+  local latest_tag tag_sha head_sha
+  latest_tag="\$(git tag -l 'v*' --sort=-v:refname | head -1)"
+  [ -n "\${latest_tag}" ] || return 0
 
-  [ "\${local_sha}" = "\${remote_sha}" ] && return 0
+  tag_sha="\$(git rev-parse "\${latest_tag}^{commit}" 2>/dev/null)"
+  head_sha="\$(git rev-parse HEAD 2>/dev/null)"
+  [ -n "\${tag_sha}" ] && [ -n "\${head_sha}" ] || return 0
+  [ "\${tag_sha}" = "\${head_sha}" ] && return 0
 
-  if git merge-base --is-ancestor "\${local_sha}" "\${remote_sha}" 2>/dev/null; then
-    if git pull --ff-only --quiet 2>/dev/null; then
-      echo "amusic: updated to \${remote_sha:0:7}"
-      bun install --silent 2>/dev/null || echo "amusic: bun install failed, continuing"
-    else
-      echo "amusic: pull failed, running local version"
-    fi
+  if git checkout --quiet "\${latest_tag}" 2>/dev/null; then
+    echo "amusic: updated to \${latest_tag}"
+    bun install --silent 2>/dev/null || echo "amusic: bun install failed, continuing"
   else
-    echo "amusic: local branch diverged/ahead, skipping update"
+    echo "amusic: checkout of \${latest_tag} failed, running local version"
   fi
 }
 
