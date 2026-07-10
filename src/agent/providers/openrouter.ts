@@ -66,7 +66,7 @@ export class OpenRouterProvider implements AgentProvider {
         authorization: `Bearer ${this.apiKey}`,
         // OpenRouter attribution headers (optional but recommended by their docs).
         "http-referer": "https://github.com/pyfig/spotify-harness-tui",
-        "x-title": "vibedeck",
+        "x-title": "music-agent",
       },
       body: JSON.stringify(
         openaiCompatTransport.buildBody({

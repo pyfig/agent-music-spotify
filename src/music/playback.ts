@@ -49,8 +49,8 @@ interface PlayerDeps {
 
 const socketPath = () =>
   process.platform === "win32"
-    ? `\\\\.\\pipe\\vibedeck-mpv-${process.pid}`
-    : join(tmpdir(), `vibedeck-mpv-${process.pid}.sock`);
+    ? `\\\\.\\pipe\\music-agent-mpv-${process.pid}`
+    : join(tmpdir(), `music-agent-mpv-${process.pid}.sock`);
 
 async function connectWithRetry(path: string, timeoutMs: number): Promise<Socket> {
   const deadline = Date.now() + timeoutMs;

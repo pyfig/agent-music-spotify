@@ -1,8 +1,8 @@
 {
-  "name": "vibedeck",
+  "name": "music-agent",
   "module": "src/index.tsx",
   "bin": {
-    "vibedeck": "src/index.tsx"
+    "music-agent": "src/index.tsx"
   },
   "type": "module",
   "private": true,

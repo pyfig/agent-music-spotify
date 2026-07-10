@@ -1171,7 +1171,7 @@ git commit -m "feat(agent): map reasoning effort per turn type, degrade 400s by 
 
 - [ ] **Step 9: Real-run sanity check (one per family)**
 
-Use the `run-vibedeck` skill to generate one playlist each on an opencode-zen anthropic model, an opencode-go openai-compat model, and (if configured) an OpenAI model. Confirm: finalize quality is unchanged, no new 400s, and the hard-demand/rescue turns visibly used a smaller/faster response in logs.
+Use the `run-music-agent` skill to generate one playlist each on an opencode-zen anthropic model, an opencode-go openai-compat model, and (if configured) an OpenAI model. Confirm: finalize quality is unchanged, no new 400s, and the hard-demand/rescue turns visibly used a smaller/faster response in logs.
 
 ---
 
@@ -1286,7 +1286,7 @@ git commit -m "refactor(agent): trim tool descriptions that duplicate skill poli
 
 - [ ] **Step 5: Real-run sanity check (one family)**
 
-Run one playlist generation via `run-vibedeck`. Confirm clarify-first behavior and finalize shape are unaffected by the shorter descriptions (policy still lives in the always-on skills, which are unchanged).
+Run one playlist generation via `run-music-agent`. Confirm clarify-first behavior and finalize shape are unaffected by the shorter descriptions (policy still lives in the always-on skills, which are unchanged).
 
 ---
 
@@ -1565,4 +1565,4 @@ Everything above is safe to implement now: it's mechanical, covered by tests aga
 
 - `bun test` — full suite green.
 - Repo's typecheck command — clean.
-- Task 3 and Task 4 each get one real `run-vibedeck` playlist generation per touched provider family before moving on — these are prompt/behavior changes that unit tests can assert the *wire format* of but not curation *quality*.
+- Task 3 and Task 4 each get one real `run-music-agent` playlist generation per touched provider family before moving on — these are prompt/behavior changes that unit tests can assert the *wire format* of but not curation *quality*.

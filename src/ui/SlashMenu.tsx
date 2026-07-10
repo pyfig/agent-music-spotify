@@ -19,7 +19,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/memory", description: "show saved taste memory" },
   { cmd: "/history", description: "browse past sessions & model reasoning" },
   { cmd: "/forget", description: "clear taste memory" },
-  { cmd: "/quit", description: "exit vibedeck" },
+  { cmd: "/quit", description: "exit music-agent" },
 ];
 
 export function filterSlashCommands(input: string): SlashCommand[] {
