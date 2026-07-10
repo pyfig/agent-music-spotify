@@ -61,6 +61,32 @@ export async function appendHistory(config: HistoryConfig, entry: HistoryEntry):
   await save(config, entries.slice(-HISTORY_LIMIT));
 }
 
+/** Plain-text form of a session for clipboard export: title, prompt, tracks. */
+export function historyEntryToText(entry: HistoryEntry): string {
+  return [
+    entry.title,
+    `Request: ${entry.prompt}`,
+    "",
+    ...entry.tracks.map((t) => `${t.artist} – ${t.title}`),
+  ].join("\n");
+}
+
+/**
+ * Plain-text form of a session's reasoning transcript for clipboard export:
+ * reasoning verbatim, tool calls/results as compact one-liners (results
+ * clipped — the reasoning is the payload, tool output is context).
+ */
+export function historyReasoningToText(entry: HistoryEntry): string {
+  const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
+  const lines: string[] = [entry.title, `Request: ${entry.prompt}`, ""];
+  for (const e of entry.events) {
+    if (e.kind === "reasoning") lines.push(e.delta.trim());
+    else if (e.kind === "tool_call") lines.push(`⏺ ${e.name} ${clip(JSON.stringify(e.args), 200)}`);
+    else lines.push(`  ⎿ ${e.ok ? "✓" : "✗"} ${clip(JSON.stringify(e.result), 200)}`);
+  }
+  return lines.join("\n");
+}
+
 /** Patch the title of the entry with the given header; no-op when absent. */
 export async function updateHistoryTitle(
   config: HistoryConfig,

@@ -1,5 +1,7 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { chmodSync, mkdirSync } from "node:fs";
+import { sanitizeCredential } from "./util/sanitize";
 import type { MusicBackend } from "./music/types";
 
 const MUSIC_BACKENDS: MusicBackend[] = ["spotify", "soundcloud", "youtube-music"];
@@ -85,7 +87,31 @@ export interface FileConfig {
   volume?: number;
 }
 
+/**
+ * Secrets (OAuth tokens, API keys) live in world-readable-by-default files;
+ * clamp to owner-only after every write and on load (a file created by an
+ * older version keeps its wide mode until touched). chmod is a no-op/EPERM
+ * on some platforms (notably Windows) — never let that break the app.
+ */
+export function hardenSecretFile(path: string): void {
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // best-effort: missing file or unsupported platform
+  }
+}
+
+/** Same idea for the directory holding the secret files. */
+export function ensureSecretDir(dir: string): void {
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    // best-effort
+  }
+}
+
 async function readFileConfig(): Promise<FileConfig> {
+  hardenSecretFile(CONFIG_FILE);
   try {
     const text = await Bun.file(CONFIG_FILE).text();
     return JSON.parse(text) as FileConfig;
@@ -213,15 +239,7 @@ const NO_SANITIZE_KEYS = new Set<keyof FileConfig>(["customSystemPrompt", "volum
 // choke point so every provider gets a clean value regardless of source.
 function sanitizeFieldValue(key: keyof FileConfig, value: unknown): unknown {
   if (typeof value !== "string" || NO_SANITIZE_KEYS.has(key)) return value;
-  let v = value.trim();
-  if (
-    (v.startsWith('"') && v.endsWith('"') && v.length >= 2) ||
-    (v.startsWith("'") && v.endsWith("'") && v.length >= 2)
-  ) {
-    v = v.slice(1, -1).trim();
-  }
-  v = v.replace(/^bearer\s+/i, "");
-  return v;
+  return sanitizeCredential(value);
 }
 
 export async function saveConfig(partial: FileConfig): Promise<Config> {
@@ -231,7 +249,9 @@ export async function saveConfig(partial: FileConfig): Promise<Config> {
     (sanitized as Record<string, unknown>)[k] = sanitizeFieldValue(k as keyof FileConfig, v);
   }
   const merged = { ...existing, ...sanitized };
+  ensureSecretDir(dirname(CONFIG_FILE));
   await Bun.write(CONFIG_FILE, JSON.stringify(merged, null, 2));
+  hardenSecretFile(CONFIG_FILE);
   // Mirror the edited keys into process.env so the next loadConfig() — and
   // the provider useMemo in app.tsx — pick up the new value even when the
   // env var was set at startup. undefined clears the env override (used by

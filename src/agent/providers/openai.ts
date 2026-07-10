@@ -1,18 +1,8 @@
-import type { AgentProvider, AgentResult, GenerateOptions } from "../types";
-import { consumeSseStream } from "./opencode";
+import type { AgentMessage, AgentProvider, AgentResult, GenerateOptions, ProviderErrorInfo } from "../types";
+import { parseRetryAfter } from "./opencode";
+import { openaiCompatTransport } from "./transports/openaiCompat";
 import { toolChoiceForFamily, toolsForOpenAIChat } from "../tools";
-
-/** Strips paste artifacts (whitespace, wrapping quotes, "Bearer " prefix) that turn a valid key into a rejected one. */
-function sanitizeCredential(value: string): string {
-  let v = value.trim();
-  if (
-    (v.startsWith('"') && v.endsWith('"') && v.length >= 2) ||
-    (v.startsWith("'") && v.endsWith("'") && v.length >= 2)
-  ) {
-    v = v.slice(1, -1).trim();
-  }
-  return v.replace(/^bearer\s+/i, "");
-}
+import { sanitizeCredential } from "../../util/sanitize";
 
 export type OpenAIAuthMode = "api" | "subs";
 
@@ -76,35 +66,52 @@ export class OpenAIProvider implements AgentProvider {
     signal?: AbortSignal,
     opts?: GenerateOptions,
   ): Promise<AgentResult> {
+    return this.generateMessages(system, [{ role: "user", content: user }], onToken, signal, opts);
+  }
+
+  async generateMessages(
+    system: string,
+    messages: AgentMessage[],
+    onToken?: (delta: string) => void,
+    signal?: AbortSignal,
+    opts?: GenerateOptions,
+  ): Promise<AgentResult> {
     if (!this.baseUrl) {
       throw new Error("openai provider requires OPENAI_BASE_URL to be set");
     }
+    // Same wire dialect as the opencode openai-compat family — reuse its
+    // transport for body building and SSE parsing; only auth differs here.
     const toolsPayload = opts?.tools?.length ? toolsForOpenAIChat(opts.tools) : undefined;
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+    const choice =
+      toolsPayload && opts?.toolChoice ? toolChoiceForFamily("openai-compat", opts.toolChoice.name) : undefined;
+    const res = await fetch(openaiCompatTransport.endpoint(this.baseUrl, this.model), {
       method: "POST",
       signal,
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${this.bearer()}`,
       },
-      body: JSON.stringify({
-        model: this.model,
-        stream: true,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        ...(toolsPayload ? { tools: toolsPayload, tool_choice: "auto" } : {}),
-        ...(toolsPayload && opts?.toolChoice
-          ? toolChoiceForFamily("openai-compat", opts.toolChoice.name)
-          : {}),
-      }),
+      body: JSON.stringify(
+        openaiCompatTransport.buildBody({
+          model: this.model,
+          system,
+          messages,
+          tools: toolsPayload,
+          choice,
+          // reasoning_effort is not sent from this provider (unchanged
+          // behavior) — strip it before the shared body builder.
+          opts: opts ? { ...opts, reasoningEffort: undefined } : opts,
+        }),
+      ),
     });
     if (!res.ok || !res.body) {
-      throw new Error(
-        `openai request failed: ${res.status} ${await res.text()}`,
-      );
+      const body = (await res.text()).slice(0, 500);
+      const err = new Error(`openai request failed: ${res.status} ${body}`) as Error & ProviderErrorInfo;
+      err.status = res.status;
+      const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));
+      if (retryAfterMs !== undefined) err.retryAfterMs = retryAfterMs;
+      throw err;
     }
-    return consumeSseStream(res.body, onToken, "openai", opts?.onReasoning, Boolean(toolsPayload));
+    return openaiCompatTransport.parseSSE(res.body, onToken, "openai", opts?.onReasoning);
   }
 }

@@ -1,0 +1,186 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`transport buildBody snapshots anthropic 1`] = `
+{
+  "max_tokens": 1000,
+  "messages": [
+    {
+      "content": "find tracks",
+      "role": "user",
+    },
+    {
+      "content": [
+        {
+          "text": "searching",
+          "type": "text",
+        },
+        {
+          "id": "call_1",
+          "input": {
+            "artist": "A",
+            "title": "B",
+          },
+          "name": "searchTrack",
+          "type": "tool_use",
+        },
+      ],
+      "role": "assistant",
+    },
+    {
+      "content": [
+        {
+          "content": "{"uri":"s:1"}",
+          "tool_use_id": "call_1",
+          "type": "tool_result",
+        },
+      ],
+      "role": "user",
+    },
+    {
+      "content": "continue",
+      "role": "user",
+    },
+  ],
+  "model": "test-model",
+  "stream": true,
+  "system": "sys",
+}
+`;
+
+exports[`transport buildBody snapshots openai-responses 1`] = `
+{
+  "input": [
+    {
+      "content": "find tracks",
+      "role": "user",
+    },
+    {
+      "content": "searching",
+      "role": "assistant",
+    },
+    {
+      "arguments": "{"artist":"A","title":"B"}",
+      "call_id": "call_1",
+      "name": "searchTrack",
+      "type": "function_call",
+    },
+    {
+      "call_id": "call_1",
+      "output": "{"uri":"s:1"}",
+      "type": "function_call_output",
+    },
+    {
+      "content": "continue",
+      "role": "user",
+    },
+  ],
+  "instructions": "sys",
+  "max_output_tokens": 1000,
+  "model": "test-model",
+  "stream": true,
+}
+`;
+
+exports[`transport buildBody snapshots openai-compat 1`] = `
+{
+  "max_completion_tokens": 1000,
+  "messages": [
+    {
+      "content": "sys",
+      "role": "system",
+    },
+    {
+      "content": "find tracks",
+      "role": "user",
+    },
+    {
+      "content": "searching",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"artist":"A","title":"B"}",
+            "name": "searchTrack",
+          },
+          "id": "call_1",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "{"uri":"s:1"}",
+      "role": "tool",
+      "tool_call_id": "call_1",
+    },
+    {
+      "content": "continue",
+      "role": "user",
+    },
+  ],
+  "model": "test-model",
+  "stream": true,
+}
+`;
+
+exports[`transport buildBody snapshots google 1`] = `
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "find tracks",
+        },
+      ],
+      "role": "user",
+    },
+    {
+      "parts": [
+        {
+          "text": "searching",
+        },
+        {
+          "functionCall": {
+            "args": {
+              "artist": "A",
+              "title": "B",
+            },
+            "name": "searchTrack",
+          },
+        },
+      ],
+      "role": "model",
+    },
+    {
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "searchTrack",
+            "response": {
+              "result": "{"uri":"s:1"}",
+            },
+          },
+        },
+      ],
+      "role": "user",
+    },
+    {
+      "parts": [
+        {
+          "text": "continue",
+        },
+      ],
+      "role": "user",
+    },
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 1000,
+  },
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "sys",
+      },
+    ],
+  },
+}
+`;

@@ -1,4 +1,5 @@
-import type { AgentProvider, AgentResult } from "../types";
+import type { AgentMessage, AgentProvider, AgentResult } from "../types";
+import { joinMessagesAsText } from "./messages";
 
 export interface ClaudeCliConfig {
   model?: string;
@@ -16,6 +17,18 @@ export class ClaudeCliProvider implements AgentProvider {
     this.model = config.model ?? "sonnet";
     this.effort = config.effort;
     this.customSystemPrompt = config.systemPrompt;
+  }
+
+  // TODO: `claude -p` is a one-shot prompt with no message-history flag, so
+  // multi-turn is flattened to text here. If the CLI grows a native history
+  // input, switch this to it.
+  async generateMessages(
+    system: string,
+    messages: AgentMessage[],
+    onToken?: (delta: string) => void,
+    signal?: AbortSignal,
+  ): Promise<AgentResult> {
+    return this.generate(system, joinMessagesAsText(messages), onToken, signal);
   }
 
   async generate(

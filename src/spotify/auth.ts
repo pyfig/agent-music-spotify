@@ -1,12 +1,22 @@
 import { randomBytes, createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname } from "node:path";
 import type { Config } from "../config";
-import { tokensPath } from "../config";
+import { tokensPath, hardenSecretFile, ensureSecretDir } from "../config";
 
 const AUTH_URL = "https://accounts.spotify.com/authorize";
 const TOKEN_URL = "https://accounts.spotify.com/api/token";
-const REDIRECT_URI = "http://127.0.0.1:8888/callback";
+/**
+ * Spotify's loopback-redirect policy (per their redirect_uri docs) follows
+ * RFC 8252: register `http://127.0.0.1/callback` WITHOUT a port in the
+ * dashboard, then supply the dynamically assigned port at authorization
+ * time. This lets us bind an ephemeral port instead of fighting over a
+ * fixed one — the same URI (with the real port) must be used in both the
+ * authorize request and the token exchange.
+ */
+export function redirectUri(port: number): string {
+  return `http://127.0.0.1:${port}/callback`;
+}
 const SCOPES = [
   "playlist-modify-public",
   "playlist-modify-private",
@@ -35,153 +45,19 @@ function base64url(buf: Buffer): string {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-// Корень репозитория (два уровня вверх от src/spotify/auth.ts).
-// Используем для опознавания «своих» зомби-процессов по их cwd.
-const REPO_DIR = resolve(import.meta.dir, "..", "..");
-
-interface PidInfo {
-  pid: number;
-  comm?: string;
-  args?: string;
-  cwd?: string;
-}
-
-function spawnText(cmd: string[], opts: { timeout?: number } = {}): string {
-  try {
-    const r = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "ignore", ...opts });
-    return r.stdout?.toString().trim() ?? "";
-  } catch {
-    return "";
-  }
-}
-
-async function listListenersOn8888(): Promise<PidInfo[]> {
-  const pids: number[] = [];
-  const lsof = spawnText(["lsof", "-nP", "-iTCP:8888", "-sTCP:LISTEN", "-t"]);
-  for (const line of lsof.split(/\r?\n/)) {
-    const n = Number(line.trim());
-    if (Number.isInteger(n) && n > 0) pids.push(n);
-  }
-  if (pids.length === 0) return [];
-  return pids.map((pid) => {
-    const ps = spawnText(["ps", "-o", "pid=,comm=,args=", "-p", String(pid)]);
-    const first = ps.split(/\r?\n/)[0] ?? "";
-    const parts = first.trim().split(/\s+/);
-    const pidOut = Number(parts[0] ?? pid);
-    // cwd через lsof: строки начинаются с 'n', берём первую.
-    let cwd: string | undefined;
-    const cwdOut = spawnText(["lsof", "-a", "-p", String(pidOut), "-d", "cwd", "-Fn"]);
-    for (const line of cwdOut.split(/\r?\n/)) {
-      if (line.startsWith("n") && line.length > 1) {
-        cwd = line.slice(1);
-        break;
-      }
-    }
-    return { pid: pidOut, comm: parts[1], args: first, cwd };
-  });
-}
-
-function isOurs(info: PidInfo): boolean {
-  if (info.pid === process.pid) return false;
-  // Надёжный признак: зомби запущен из этого же репозитория.
-  if (info.cwd && info.cwd.toLowerCase() === REPO_DIR.toLowerCase()) return true;
-  // Запасные маркеры: установленный bin `vibedeck` или наш entrypoint.
-  const comm = (info.comm ?? "").toLowerCase();
-  const args = (info.args ?? "").toLowerCase();
-  if (comm === "vibedeck") return true;
-  if (args.includes("src/index.tsx") && (comm.includes("bun") || comm.includes("vibedeck"))) return true;
-  // Порт 8888 — выделенный OAuth-callback этого приложения. Любой
-  // bun/node/vibedeck-процесс, слушающий его, почти наверняка наш
-  // устаревший login-сервер (другие dev-серверы обычно сидят на
-  // 3000/5173/8080). Прибиваем без вопросов, чтобы не пугать юзера.
-  if (comm === "bun" || comm === "node" || comm.includes("vibedeck")) return true;
-  return false;
-}
-
-async function killPid(pid: number): Promise<boolean> {
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    return false;
-  }
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 25));
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return true;
-    }
-  }
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {
-    // ignore
-  }
-  await new Promise((r) => setTimeout(r, 50));
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-async function freePortIfStaleZombie(): Promise<{ killed: number; foreign?: PidInfo }> {
-  const listeners = await listListenersOn8888();
-  let killed = 0;
-  for (const info of listeners) {
-    if (isOurs(info)) {
-      if (await killPid(info.pid)) {
-        killed++;
-        process.stderr.write(`freed stale login server on port 8888 (pid ${info.pid})\n`);
-      }
-    } else {
-      return { killed, foreign: info };
-    }
-  }
-  return { killed };
-}
-
-const PORT = 8888;
-
-async function startListenerServer(
+/**
+ * Bind an ephemeral loopback port for the OAuth callback. `port: 0` lets the
+ * OS pick a free port, so a stale login server (or any other process) can
+ * never block us — which also means we never have to kill anything.
+ */
+function startListenerServer(
   handler: (req: Request) => Response | Promise<Response>,
-): Promise<ReturnType<typeof Bun.serve>> {
-  // Чужой процесс на 8888 может уйти сам за секунды (кратковременный
-  // сервер). Поэтому сначала ждём до ~15с, ретрая бинд, и только потом
-  // падаем с ошибкой — чтобы не тыкать юзера в занятый порт.
-  const FOREIGN_RETRY_UNTIL = Date.now() + 15_000;
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      return Bun.serve({
-        port: PORT,
-        hostname: "127.0.0.1",
-        fetch: handler,
-      });
-    } catch (e) {
-      lastErr = e;
-      const msg = String((e as { message?: unknown } | null)?.message ?? e);
-      if (!/8888|in use|EADDRINUSE/i.test(msg)) throw e;
-      const r = await freePortIfStaleZombie();
-      if (r.foreign) {
-        if (Date.now() < FOREIGN_RETRY_UNTIL) {
-          // Дадим чужому процессу шанс уйти; попробуем снова.
-          await new Promise((r) => setTimeout(r, 1500));
-          continue;
-        }
-        const f = r.foreign;
-        throw new Error(
-          `Port ${PORT} занят процессом (PID ${f.pid}: ${f.comm ?? f.args ?? "?"}) уже >15с. Закройте его и перезапустите.`,
-        );
-      }
-      if (r.killed === 0) {
-        // Никто не держит, но bind упал — короткая пауза и повтор.
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    }
-  }
-  throw lastErr;
+): ReturnType<typeof Bun.serve> {
+  return Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: handler,
+  });
 }
 
 function generatePkce(): { verifier: string; challenge: string } {
@@ -191,6 +67,7 @@ function generatePkce(): { verifier: string; challenge: string } {
 }
 
 async function readTokens(config: Config): Promise<Tokens | null> {
+  hardenSecretFile(tokensPath(config));
   try {
     const text = await Bun.file(tokensPath(config)).text();
     return JSON.parse(text) as Tokens;
@@ -199,8 +76,11 @@ async function readTokens(config: Config): Promise<Tokens | null> {
   }
 }
 
-async function writeTokens(config: Config, tokens: Tokens): Promise<void> {
-  await Bun.write(tokensPath(config), JSON.stringify(tokens, null, 2));
+export async function writeTokens(config: Config, tokens: Tokens): Promise<void> {
+  const path = tokensPath(config);
+  ensureSecretDir(dirname(path));
+  await Bun.write(path, JSON.stringify(tokens, null, 2));
+  hardenSecretFile(path);
 }
 
 async function clearTokens(config: Config): Promise<void> {
@@ -215,11 +95,14 @@ async function exchangeCode(
   config: Config,
   code: string,
   verifier: string,
+  redirectUriValue: string,
 ): Promise<Tokens> {
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
-    redirect_uri: REDIRECT_URI,
+    // Must byte-match the redirect_uri sent in the authorize request,
+    // including the ephemeral port.
+    redirect_uri: redirectUriValue,
     client_id: config.spotifyClientId,
     code_verifier: verifier,
   });
@@ -267,15 +150,6 @@ async function runLoginFlow(config: Config): Promise<Tokens> {
   const { verifier, challenge } = generatePkce();
   const state = base64url(randomBytes(16));
 
-  const authUrl = new URL(AUTH_URL);
-  authUrl.searchParams.set("client_id", config.spotifyClientId);
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
-  authUrl.searchParams.set("code_challenge_method", "S256");
-  authUrl.searchParams.set("code_challenge", challenge);
-  authUrl.searchParams.set("scope", SCOPES);
-  authUrl.searchParams.set("state", state);
-
   let server!: ReturnType<typeof Bun.serve>;
   let onCode: ((code: string) => void) | null = null;
   let onAuthError: ((err: Error) => void) | null = null;
@@ -310,23 +184,30 @@ async function runLoginFlow(config: Config): Promise<Tokens> {
     return new Response("Spotify auth complete. You can close this tab.");
   };
 
-  // Ждём, пока сервер реально встанет на порту (или упадёт с ошибкой),
-  // иначе браузер может открыться раньше, чем login-сервер готов принять
-  // callback Spotify. При занятом порту здесь же авто-прибиваются
-  // наши собственные «зомби»-инстансы и старт ретраится.
-  const serverReady = startListenerServer(handler).then((s) => {
-    server = s;
-  });
+  // Server must be up before the browser opens (Spotify may redirect back
+  // fast), and we need its OS-assigned port to build the redirect URI.
+  server = startListenerServer(handler);
+  // port is only undefined for unix-socket servers; we always bind TCP.
+  if (server.port === undefined) throw new Error("login server bound without a TCP port");
+  const uri = redirectUri(server.port);
+
+  const authUrl = new URL(AUTH_URL);
+  authUrl.searchParams.set("client_id", config.spotifyClientId);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("redirect_uri", uri);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+  authUrl.searchParams.set("code_challenge", challenge);
+  authUrl.searchParams.set("scope", SCOPES);
+  authUrl.searchParams.set("state", state);
 
   const codePromise = new Promise<string>((resolve, reject) => {
     onCode = resolve;
     onAuthError = reject;
   });
 
-  await serverReady;
   await openBrowser(authUrl.toString());
   const code = await codePromise;
-  return exchangeCode(config, code, verifier);
+  return exchangeCode(config, code, verifier, uri);
 }
 
 function isWSL(): boolean {
@@ -354,13 +235,17 @@ export async function openBrowser(url: string): Promise<void> {
   // treats `&`/`?` literally inside single quotes), interop wraps the
   // space-containing -Command element in double quotes without mangling
   // anything, and Start-Process hands the URL to the OS default browser.
+  // PowerShell single-quote escaping: '' is a literal ' inside a
+  // single-quoted string — without it a crafted URL could break out of the
+  // quoting and inject a command.
+  const psUrl = url.replace(/'/g, "''");
   const cmd =
     process.platform === "darwin"
       ? ["open", url]
       : process.platform === "win32"
-        ? ["powershell", "-NoProfile", "-Command", `Start-Process '${url}'`]
+        ? ["powershell", "-NoProfile", "-Command", `Start-Process '${psUrl}'`]
         : isWSL()
-          ? ["powershell.exe", "-NoProfile", "-Command", `Start-Process '${url}'`]
+          ? ["powershell.exe", "-NoProfile", "-Command", `Start-Process '${psUrl}'`]
           : ["xdg-open", url];
   try {
     Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore" });

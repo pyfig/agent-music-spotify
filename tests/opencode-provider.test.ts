@@ -96,7 +96,7 @@ describe("OpencodeProvider model-family routing", () => {
     expect(text).toBe("hello");
     expect(calls[0]!.url).toBe("https://opencode.ai/zen/v1/responses");
     expect(calls[0]!.body.instructions).toBe("sys");
-    expect(calls[0]!.body.input).toBe("hi");
+    expect(calls[0]!.body.input).toEqual([{ role: "user", content: "hi" }]);
   });
 
   test("anthropic family (minimax) hits /messages, parses content_block_delta", async () => {
@@ -422,5 +422,272 @@ describe("OpencodeProvider tool-calling: opts.tools makes the request carry tool
     const body = calls[0]!.body as any;
     expect(body.tools).toBeUndefined();
     expect(body.tool_choice).toBeUndefined();
+  });
+});
+
+describe("OpencodeProvider max output tokens", () => {
+  test("anthropic: body.max_tokens defaults to 4096, honors opts.maxTokens", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "claude-sonnet-5" });
+    await provider.generate("sys", "hi");
+    expect(calls[0]!.body.max_tokens).toBe(4096);
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    await provider.generate("sys", "hi", undefined, undefined, { maxTokens: 2048 });
+    expect(calls[1]!.body.max_tokens).toBe(2048);
+  });
+
+  test("openai-responses: body.max_output_tokens set from opts.maxTokens", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "response.output_text.delta", delta: "hi" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "gpt-5.5" });
+    await provider.generate("sys", "hi", undefined, undefined, { maxTokens: 1024 });
+    expect(calls[0]!.body.max_output_tokens).toBe(1024);
+  });
+
+  test("openai-compat: body.max_completion_tokens set from opts.maxTokens", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "glm-5.2" });
+    await provider.generate("sys", "hi", undefined, undefined, { maxTokens: 1024 });
+    expect(calls[0]!.body.max_completion_tokens).toBe(1024);
+  });
+
+  test("google: body.generationConfig.maxOutputTokens set from opts.maxTokens", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "hi" }] } }] })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "gemini-2.5-pro" });
+    await provider.generate("sys", "hi", undefined, undefined, { maxTokens: 1024 });
+    expect(calls[0]!.body.generationConfig.maxOutputTokens).toBe(1024);
+  });
+});
+
+describe("OpencodeProvider Retry-After / status propagation", () => {
+  test("429 response attaches status and retryAfterMs (numeric seconds) to the thrown error", async () => {
+    const { respond } = mockFetch();
+    respond(new Response("rate limited", { status: 429, headers: { "retry-after": "2" } }));
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "glm-5.2" });
+    let caught: (Error & { status?: number; retryAfterMs?: number }) | undefined;
+    try {
+      await provider.generate("sys", "hi");
+    } catch (e) {
+      caught = e as Error & { status?: number; retryAfterMs?: number };
+    }
+    expect(caught?.status).toBe(429);
+    expect(caught?.retryAfterMs).toBe(2000);
+  });
+
+  test("missing Retry-After header leaves retryAfterMs undefined", async () => {
+    const { respond } = mockFetch();
+    respond(new Response("server error", { status: 500 }));
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "glm-5.2" });
+    let caught: (Error & { status?: number; retryAfterMs?: number }) | undefined;
+    try {
+      await provider.generate("sys", "hi");
+    } catch (e) {
+      caught = e as Error & { status?: number; retryAfterMs?: number };
+    }
+    expect(caught?.status).toBe(500);
+    expect(caught?.retryAfterMs).toBeUndefined();
+  });
+});
+
+describe("OpencodeProvider reasoning effort mapping", () => {
+  test("anthropic: 'low' sets thinking.budget_tokens and raises max_tokens to cover it", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "claude-sonnet-5" });
+    await provider.generate("sys", "hi", undefined, undefined, { reasoningEffort: "low" });
+    const body = calls[0]!.body as any;
+    expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+    expect(body.max_tokens).toBe(4096 + 2048);
+  });
+
+  test("anthropic: 'none' omits the thinking field entirely", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "claude-sonnet-5" });
+    await provider.generate("sys", "hi", undefined, undefined, { reasoningEffort: "none" });
+    expect(calls[0]!.body.thinking).toBeUndefined();
+  });
+
+  test("anthropic: forced tool choice suppresses thinking (Anthropic rejects thinking + forced tool_choice)", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }), JSON.stringify({ type: "message_stop" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "claude-sonnet-5" });
+    await provider.generate("sys", "hi", undefined, undefined, {
+      tools: MUSIC_AGENT_TOOLS,
+      toolChoice: { name: "clarify" },
+      reasoningEffort: "low",
+    });
+    const body = calls[0]!.body as any;
+    expect(body.tool_choice).toEqual({ type: "tool", name: "clarify" });
+    expect(body.thinking).toBeUndefined();
+    expect(body.max_tokens).toBe(4096);
+  });
+
+  test("openai-responses: maps to reasoning.effort ('none' -> 'minimal')", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "response.output_text.delta", delta: "hi" })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "gpt-5.5" });
+    await provider.generate("sys", "hi", undefined, undefined, { reasoningEffort: "none" });
+    expect(calls[0]!.body.reasoning).toEqual({ effort: "minimal" });
+  });
+
+  test("openai-compat: maps to reasoning_effort", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "glm-5.2" });
+    await provider.generate("sys", "hi", undefined, undefined, { reasoningEffort: "low" });
+    expect(calls[0]!.body.reasoning_effort).toBe("low");
+  });
+
+  test("google: maps to generationConfig.thinkingConfig.thinkingBudget", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "hi" }] } }] })]));
+    const provider = new OpencodeProvider({ name: "opencode-zen", apiKey: "k", baseUrl: "https://opencode.ai/zen/v1", model: "gemini-2.5-pro" });
+    await provider.generate("sys", "hi", undefined, undefined, { reasoningEffort: "high" });
+    expect(calls[0]!.body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 12000 });
+  });
+
+  test("no reasoningEffort set -> no reasoning field on any family (unchanged default behavior)", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]));
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "glm-5.2" });
+    await provider.generate("sys", "hi");
+    expect(calls[0]!.body.reasoning_effort).toBeUndefined();
+  });
+
+  test("400 with forced tool_choice AND reasoningEffort degrades by stripping both, retries once", async () => {
+    const bodies: any[] = [];
+    let call = 0;
+    globalThis.fetch = (async (_input: any, init: any) => {
+      bodies.push(JSON.parse(init.body));
+      if (call++ === 0) {
+        return new Response(JSON.stringify({ error: { message: "bad request" } }), { status: 400 });
+      }
+      return sseResponse([JSON.stringify({ choices: [{ delta: { content: "hi" } }] }), "[DONE]"]);
+    }) as typeof fetch;
+    const provider = new OpencodeProvider({ name: "opencode-go", apiKey: "k", baseUrl: "https://opencode.ai/zen/go/v1", model: "deepseek-v4-pro" });
+    const result = await provider.generate("sys", "hi", undefined, undefined, {
+      toolChoice: { name: "clarify" },
+      tools: MUSIC_AGENT_TOOLS,
+      reasoningEffort: "low",
+      maxTokens: 100,
+    });
+    expect(result.text).toBe("hi");
+    expect(bodies.length).toBe(2);
+    expect(bodies[0].reasoning_effort).toBe("low");
+    expect(bodies[0].max_completion_tokens).toBe(100);
+    expect(bodies[1].tool_choice).toBe("auto");
+    expect(bodies[1].reasoning_effort).toBeUndefined();
+    expect(bodies[1].max_completion_tokens).toBe(4096);
+  });
+});
+
+describe("OpencodeProvider multi-turn history serialization", () => {
+  // One shared canonical history: user ask → assistant tool call → tool result → continuation.
+  const history = [
+    { role: "user" as const, content: "find tracks" },
+    {
+      role: "assistant" as const,
+      content: "searching",
+      toolCalls: [{ id: "call_1", name: "searchTrack", args: { artist: "A", title: "B" } }],
+    },
+    { role: "tool" as const, callId: "call_1", name: "searchTrack", content: '{"uri":"s:1"}' },
+    { role: "user" as const, content: "continue" },
+  ];
+
+  function providerFor(model: string): OpencodeProvider {
+    return new OpencodeProvider({
+      name: "opencode-zen",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/v1",
+      model,
+    });
+  }
+
+  test("anthropic family: tool_use block + tool_result block linked by id", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } })]));
+    await providerFor("claude-sonnet-5").generateMessages("sys", history);
+    expect(calls[0]!.body.system).toBe("sys");
+    expect(calls[0]!.body.messages).toEqual([
+      { role: "user", content: "find tracks" },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "searching" },
+          { type: "tool_use", id: "call_1", name: "searchTrack", input: { artist: "A", title: "B" } },
+        ],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: '{"uri":"s:1"}' }] },
+      { role: "user", content: "continue" },
+    ]);
+  });
+
+  test("openai-compat family: assistant.tool_calls + role:'tool' message", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "ok" } }] }), "[DONE]"]));
+    await providerFor("glm-5.2").generateMessages("sys", history);
+    expect(calls[0]!.body.messages).toEqual([
+      { role: "system", content: "sys" },
+      { role: "user", content: "find tracks" },
+      {
+        role: "assistant",
+        content: "searching",
+        tool_calls: [
+          { id: "call_1", type: "function", function: { name: "searchTrack", arguments: '{"artist":"A","title":"B"}' } },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_1", content: '{"uri":"s:1"}' },
+      { role: "user", content: "continue" },
+    ]);
+  });
+
+  test("openai-responses family: function_call + function_call_output items", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "response.output_text.delta", delta: "ok" })]));
+    await providerFor("gpt-5.5").generateMessages("sys", history);
+    expect(calls[0]!.body.input).toEqual([
+      { role: "user", content: "find tracks" },
+      { role: "assistant", content: "searching" },
+      { type: "function_call", call_id: "call_1", name: "searchTrack", arguments: '{"artist":"A","title":"B"}' },
+      { type: "function_call_output", call_id: "call_1", output: '{"uri":"s:1"}' },
+      { role: "user", content: "continue" },
+    ]);
+  });
+
+  test("google family: functionCall part + functionResponse part", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] } }] })]));
+    await providerFor("gemini-3-pro").generateMessages("sys", history);
+    expect(calls[0]!.body.contents).toEqual([
+      { role: "user", parts: [{ text: "find tracks" }] },
+      {
+        role: "model",
+        parts: [
+          { text: "searching" },
+          { functionCall: { name: "searchTrack", args: { artist: "A", title: "B" } } },
+        ],
+      },
+      { role: "user", parts: [{ functionResponse: { name: "searchTrack", response: { result: '{"uri":"s:1"}' } } }] },
+      { role: "user", parts: [{ text: "continue" }] },
+    ]);
+  });
+
+  test("error tool result carries is_error on the anthropic wire", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } })]));
+    const errHistory = [
+      history[0]!,
+      history[1]!,
+      { role: "tool" as const, callId: "call_1", name: "searchTrack", content: "boom", isError: true },
+    ];
+    await providerFor("claude-sonnet-5").generateMessages("sys", errHistory);
+    expect(calls[0]!.body.messages[2]).toEqual({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "call_1", content: "boom", is_error: true }],
+    });
   });
 });

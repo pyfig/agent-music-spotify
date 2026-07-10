@@ -22,10 +22,19 @@ function stubMusic(): MusicProvider {
  * finalizes. Records the GenerateOptions of every call so tests can assert
  * exactly which turn carried a forced toolChoice.
  */
+/** Adapts a generate-only mock into a full AgentProvider for these tests. */
+function withMessages(p: { name: string; generate: AgentProvider["generate"] }): AgentProvider {
+  return {
+    ...p,
+    generateMessages: (system, _messages, onToken, signal, opts) =>
+      p.generate(system, "", onToken, signal, opts),
+  };
+}
+
 function clarifyThenFinalizeProvider(): { provider: AgentProvider; seenOpts: (GenerateOptions | undefined)[] } {
   const seenOpts: (GenerateOptions | undefined)[] = [];
   let call = 0;
-  const provider: AgentProvider = {
+  const provider = withMessages({
     name: "scripted",
     generate: async (_system, _user, _onToken, _signal, opts): Promise<AgentResult> => {
       seenOpts.push(opts);
@@ -52,14 +61,14 @@ function clarifyThenFinalizeProvider(): { provider: AgentProvider; seenOpts: (Ge
         ],
       };
     },
-  };
+  });
   return { provider, seenOpts };
 }
 
 /** Provider that finalizes immediately (no clarify turn scripted). */
 function finalizeProvider(): { provider: AgentProvider; seenOpts: (GenerateOptions | undefined)[] } {
   const seenOpts: (GenerateOptions | undefined)[] = [];
-  const provider: AgentProvider = {
+  const provider = withMessages({
     name: "scripted",
     generate: async (_system, _user, _onToken, _signal, opts): Promise<AgentResult> => {
       seenOpts.push(opts);
@@ -74,7 +83,7 @@ function finalizeProvider(): { provider: AgentProvider; seenOpts: (GenerateOptio
         ],
       };
     },
-  };
+  });
   return { provider, seenOpts };
 }
 

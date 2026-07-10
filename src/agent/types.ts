@@ -19,6 +19,14 @@ export interface AgentResult {
   toolCalls?: ToolCall[];
 }
 
+/** One turn in the native multi-turn transport (`AgentProvider.generateMessages`).
+ * The loop builds this array append-only so a caching provider can key off a
+ * stable prefix; only compaction may rewrite the older span. */
+export type AgentMessage =
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string; toolCalls?: ToolCall[] }
+  | { role: "tool"; callId: string; name: string; content: string; isError?: boolean };
+
 /**
  * One ordered event in the agent's reasoning transcript. Reasoning deltas,
  * tool calls, and tool results are emitted in call order so the UI can render
@@ -38,13 +46,45 @@ export interface GenerateOptions {
   /** Force the model to call this specific tool on this generation. Providers
    * without a native tool-choice mechanism ignore it (graceful degradation). */
   toolChoice?: { name: string };
+  /** Cap on response tokens. Providers map this to their family's field name
+   * (max_tokens / max_output_tokens / max_completion_tokens / generationConfig.maxOutputTokens).
+   * Falls back to a provider-local default (4096) when unset. */
+  maxTokens?: number;
+  /** Hint for how much the model should "think" before answering. Providers
+   * without a native knob ignore it. Mechanical turns (rescue, hard-demand,
+   * bounced retries, forced first-turn clarify) use "low"; research turns
+   * leave this undefined so curation quality doesn't regress. */
+  reasoningEffort?: "none" | "low" | "medium" | "high";
+}
+
+/** Optional metadata a provider attaches to a thrown Error so loop.ts's
+ * retry policy can act on real signals instead of message-sniffing alone. */
+export interface ProviderErrorInfo {
+  status?: number;
+  retryAfterMs?: number;
 }
 
 export interface AgentProvider {
   name: string;
+  /** Single-turn convenience: system + one user string. Providers implement
+   * this as a thin wrapper over `generateMessages` — it exists for callers
+   * outside the agent loop (title generation, prompt rotation, clarify
+   * pre-pass) that never carry history. */
   generate(
     system: string,
     user: string,
+    onToken?: (delta: string) => void,
+    signal?: AbortSignal,
+    opts?: GenerateOptions,
+  ): Promise<AgentResult>;
+  /** Native multi-turn transport: the full message history each turn, with
+   * tool calls/results in the provider family's wire format (tool_use blocks,
+   * assistant.tool_calls, function_call items, functionResponse parts).
+   * Providers with no native history format (claude-cli) flatten to text
+   * internally — the loop never does that itself. */
+  generateMessages(
+    system: string,
+    messages: AgentMessage[],
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
     opts?: GenerateOptions,

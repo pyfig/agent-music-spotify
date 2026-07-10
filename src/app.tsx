@@ -9,10 +9,8 @@ import {
   type Config,
   type FileConfig,
 } from "./config";
-import { ClaudeCliProvider } from "./agent/providers/claude-cli";
-import { OllamaProvider, listOllamaModels } from "./agent/providers/ollama";
-import { OpencodeProvider } from "./agent/providers/opencode";
-import { OpenAIProvider } from "./agent/providers/openai";
+import { listOllamaModels } from "./agent/providers/ollama";
+import { useProvider, modelLabelFor } from "./hooks/useProviders";
 import type { AgentEvent, AgentProvider } from "./agent/types";
 import type { ClarifyQuestion } from "./agent/parse";
 import {
@@ -65,10 +63,13 @@ import { HistoryScreen } from "./ui/HistoryScreen";
 import {
   appendHistory,
   HISTORY_TITLE_SYSTEM,
+  historyEntryToText,
+  historyReasoningToText,
   loadHistory,
   updateHistoryTitle,
   type HistoryEntry,
 } from "./core/history";
+import { copyToClipboard } from "./core/clipboard";
 import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
 import { barParts, theme, truncateLabel } from "./ui/theme";
@@ -291,55 +292,8 @@ export function App() {
 
   const isSpotifyBackend = config?.musicBackend !== "soundcloud" && config?.musicBackend !== "youtube-music";
 
-  const provider: AgentProvider | null = useMemo(() => {
-    if (!config) return null;
-    switch (config.defaultProvider) {
-      case "ollama":
-        return new OllamaProvider({ url: config.ollamaUrl, model: config.ollamaModel });
-      case "opencode-go":
-        return new OpencodeProvider({
-          name: "opencode-go",
-          apiKey: config.opencodeGoApiKey,
-          baseUrl: config.opencodeGoBaseUrl,
-          model: config.opencodeGoModel,
-        });
-      case "opencode-zen":
-        return new OpencodeProvider({
-          name: "opencode-zen",
-          apiKey: config.opencodeZenApiKey,
-          baseUrl: config.opencodeZenBaseUrl,
-          model: config.opencodeZenModel,
-        });
-      case "openai": {
-        return new OpenAIProvider({
-          authMode: config.openaiAuthMode,
-          apiKey: config.openaiApiKey,
-          subsToken: config.openaiSubsToken,
-          baseUrl: config.openaiBaseUrl,
-          model: config.openaiModel,
-        });
-      }
-      case "claude-cli":
-      default:
-        return new ClaudeCliProvider({
-          model: config.claudeModel,
-          effort: config.claudeEffort,
-          systemPrompt: config.customSystemPrompt,
-        });
-    }
-  }, [config]);
-
-  const modelLabel = config
-    ? config.defaultProvider === "ollama"
-      ? `ollama:${config.ollamaModel}`
-      : config.defaultProvider === "opencode-go"
-        ? `opencode-go:${config.opencodeGoModel}`
-        : config.defaultProvider === "opencode-zen"
-          ? `opencode-zen:${config.opencodeZenModel}`
-          : config.defaultProvider === "openai"
-            ? `openai:${config.openaiModel} · ${config.openaiAuthMode}`
-            : `claude:${config.claudeModel} · effort:${config.claudeEffort}`
-    : "";
+  const provider: AgentProvider | null = useProvider(config);
+  const modelLabel = modelLabelFor(config);
 
   const lines: ResultLine[] = useMemo(() => {
     if (!resolved) return [];
@@ -424,6 +378,17 @@ export function App() {
         else if (key.name === "pagedown") box?.scrollBy(0.5, "viewport");
         else if (key.name === "escape") setHistoryDetail(null);
         else if (key.name === "return") void loadHistorySession(historyDetail);
+        else if (key.name === "c" && !key.ctrl) {
+          const entry = historyDetail;
+          void copyToClipboard(historyReasoningToText(entry))
+            .then(() => show("copied reasoning"))
+            .catch((e) => setError(String(e instanceof Error ? e.message : e)));
+        } else if (key.name === "t" && !key.ctrl) {
+          const entry = historyDetail;
+          void copyToClipboard(historyEntryToText(entry))
+            .then(() => show(`copied ${entry.tracks.length} tracks`))
+            .catch((e) => setError(String(e instanceof Error ? e.message : e)));
+        }
         return;
       }
       if (key.name === "escape") setHistoryEntries(null);
@@ -930,9 +895,11 @@ export function App() {
         lines: r.resolved.map((t) => `- ${t.artist} – ${t.title}`),
       });
       if (needsRotation(taste) && provider) {
-        taste = await rotate(taste, (raw) => provider.generate(ROTATE_SYSTEM, raw).then((r) => r.text)).catch(
-          () => taste,
-        );
+        taste = await rotate(taste, (raw) =>
+          provider.generate(ROTATE_SYSTEM, raw, undefined, undefined, { reasoningEffort: "none", maxTokens: 512 }).then(
+            (r) => r.text,
+          ),
+        ).catch(() => taste);
       }
       await saveTaste(taste);
     } catch {
@@ -1516,13 +1483,22 @@ export function App() {
         )}
 
         {screen === "main" && historyEntries !== null && (
-          <HistoryScreen
-            entries={historyEntries}
-            detail={historyDetail}
-            focused
-            onPick={(entry) => setHistoryDetail(entry)}
-            scrollRef={historyScrollRef}
-          />
+          <>
+            <HistoryScreen
+              entries={historyEntries}
+              detail={historyDetail}
+              focused
+              onPick={(entry) => setHistoryDetail(entry)}
+              scrollRef={historyScrollRef}
+            />
+            {/* Main-region toast row is hidden while the overlay is up — show
+                copy/feedback toasts here so `c` gives visible confirmation. */}
+            {toast && (
+              <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
+                <text fg={theme.green}> ✓ {toast.msg}</text>
+              </box>
+            )}
+          </>
         )}
 
         {screen === "main" && !pickerOpen && clarifyQuestions !== null && (
