@@ -9,10 +9,8 @@ import {
   type Config,
   type FileConfig,
 } from "./config";
-import { ClaudeCliProvider } from "./agent/providers/claude-cli";
-import { OllamaProvider, listOllamaModels } from "./agent/providers/ollama";
-import { OpencodeProvider } from "./agent/providers/opencode";
-import { OpenAIProvider } from "./agent/providers/openai";
+import { listOllamaModels } from "./agent/providers/ollama";
+import { useProvider, modelLabelFor } from "./hooks/useProviders";
 import type { AgentEvent, AgentProvider } from "./agent/types";
 import type { ClarifyQuestion } from "./agent/parse";
 import {
@@ -294,55 +292,8 @@ export function App() {
 
   const isSpotifyBackend = config?.musicBackend !== "soundcloud" && config?.musicBackend !== "youtube-music";
 
-  const provider: AgentProvider | null = useMemo(() => {
-    if (!config) return null;
-    switch (config.defaultProvider) {
-      case "ollama":
-        return new OllamaProvider({ url: config.ollamaUrl, model: config.ollamaModel });
-      case "opencode-go":
-        return new OpencodeProvider({
-          name: "opencode-go",
-          apiKey: config.opencodeGoApiKey,
-          baseUrl: config.opencodeGoBaseUrl,
-          model: config.opencodeGoModel,
-        });
-      case "opencode-zen":
-        return new OpencodeProvider({
-          name: "opencode-zen",
-          apiKey: config.opencodeZenApiKey,
-          baseUrl: config.opencodeZenBaseUrl,
-          model: config.opencodeZenModel,
-        });
-      case "openai": {
-        return new OpenAIProvider({
-          authMode: config.openaiAuthMode,
-          apiKey: config.openaiApiKey,
-          subsToken: config.openaiSubsToken,
-          baseUrl: config.openaiBaseUrl,
-          model: config.openaiModel,
-        });
-      }
-      case "claude-cli":
-      default:
-        return new ClaudeCliProvider({
-          model: config.claudeModel,
-          effort: config.claudeEffort,
-          systemPrompt: config.customSystemPrompt,
-        });
-    }
-  }, [config]);
-
-  const modelLabel = config
-    ? config.defaultProvider === "ollama"
-      ? `ollama:${config.ollamaModel}`
-      : config.defaultProvider === "opencode-go"
-        ? `opencode-go:${config.opencodeGoModel}`
-        : config.defaultProvider === "opencode-zen"
-          ? `opencode-zen:${config.opencodeZenModel}`
-          : config.defaultProvider === "openai"
-            ? `openai:${config.openaiModel} · ${config.openaiAuthMode}`
-            : `claude:${config.claudeModel} · effort:${config.claudeEffort}`
-    : "";
+  const provider: AgentProvider | null = useProvider(config);
+  const modelLabel = modelLabelFor(config);
 
   const lines: ResultLine[] = useMemo(() => {
     if (!resolved) return [];
