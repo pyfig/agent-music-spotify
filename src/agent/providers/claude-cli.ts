@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentProvider, AgentResult } from "../types";
+import type { AgentMessage, AgentProvider, AgentResult, GenerateOptions } from "../types";
 import { joinMessagesAsText } from "./messages";
 
 export interface ClaudeCliConfig {
@@ -27,8 +27,9 @@ export class ClaudeCliProvider implements AgentProvider {
     messages: AgentMessage[],
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
+    opts?: GenerateOptions,
   ): Promise<AgentResult> {
-    return this.generate(system, joinMessagesAsText(messages), onToken, signal);
+    return this.generate(system, joinMessagesAsText(messages), onToken, signal, opts);
   }
 
   async generate(
@@ -36,6 +37,7 @@ export class ClaudeCliProvider implements AgentProvider {
     user: string,
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
+    opts?: GenerateOptions,
   ): Promise<AgentResult> {
     const args = [
       "claude",
@@ -53,26 +55,69 @@ export class ClaudeCliProvider implements AgentProvider {
     args.push(
       "--append-system-prompt",
       appendedSystem,
+      // stream-json + verbose + include-partial-messages gives real token-level
+      // thinking_delta/text_delta events as the model works, instead of the
+      // single JSON blob `--output-format json` buffers until the whole
+      // response (including all extended thinking) is done — with tool-heavy
+      // prompts that made the UI look hung for 30s-2min with zero reasoning
+      // shown even though the CLI was actively working the whole time.
       "--output-format",
-      "json",
+      "stream-json",
+      "--verbose",
+      "--include-partial-messages",
     );
     const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
     signal?.addEventListener("abort", () => proc.kill(), { once: true });
-    // Read stdout in chunks so onToken gets a signal even if the CLI buffers.
+
+    let result: string | undefined;
+    // At effort low/medium the CLI emits no thinking_delta at all, which left
+    // the reasoning transcript blank; fall back to mirroring the answer text
+    // into the reasoning channel so the UI shows live activity.
+    let sawThinking = false;
     const readStdout = async () => {
       const reader = proc.stdout.getReader();
       const decoder = new TextDecoder();
-      let out = "";
+      let buf = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        out += chunk;
-        onToken?.(chunk);
+        buf += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          handleLine(line);
+        }
       }
-      return out;
+      if (buf.trim()) handleLine(buf.trim());
     };
-    const [stdout, stderr, exitCode] = await Promise.all([
+    const handleLine = (line: string) => {
+      let obj: Record<string, unknown>;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (obj.type === "stream_event") {
+        const event = obj.event as Record<string, unknown> | undefined;
+        if (event?.type === "content_block_delta") {
+          const delta = event.delta as Record<string, unknown> | undefined;
+          if (delta?.type === "thinking_delta" && typeof delta.thinking === "string") {
+            sawThinking = true;
+            opts?.onReasoning?.(delta.thinking);
+          } else if (delta?.type === "text_delta" && typeof delta.text === "string") {
+            onToken?.(delta.text);
+            if (!sawThinking) opts?.onReasoning?.(delta.text);
+          }
+        }
+      } else if (obj.type === "result") {
+        const r = obj.result;
+        if (typeof r === "string") result = r;
+      }
+    };
+
+    const [, stderr, exitCode] = await Promise.all([
       readStdout(),
       new Response(proc.stderr).text(),
       proc.exited,
@@ -83,9 +128,7 @@ export class ClaudeCliProvider implements AgentProvider {
     if (exitCode !== 0) {
       throw new Error(`claude CLI exited ${exitCode}: ${stderr.trim()}`);
     }
-    const parsed = JSON.parse(stdout);
-    const result = parsed.result ?? parsed.response ?? stdout;
-    if (typeof result !== "string") {
+    if (result === undefined) {
       throw new Error("unexpected claude CLI JSON shape");
     }
     return { text: result };

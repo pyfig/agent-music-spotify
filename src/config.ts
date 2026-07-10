@@ -43,6 +43,10 @@ export interface Config {
   openaiSubsToken: string;
   openaiBaseUrl: string;
   openaiModel: string;
+  /** OpenRouter: single API key, vendor-prefixed model ids ("openrouter/auto" routes automatically). */
+  openrouterApiKey: string;
+  openrouterBaseUrl: string;
+  openrouterModel: string;
   /** Playback volume 0-100, persisted across sessions. Default 70. */
   volume: number;
   /** True when provider was explicitly chosen (env or config file), not just defaulted. */
@@ -84,6 +88,9 @@ export interface FileConfig {
   openaiSubsToken?: string;
   openaiBaseUrl?: string;
   openaiModel?: string;
+  openrouterApiKey?: string;
+  openrouterBaseUrl?: string;
+  openrouterModel?: string;
   volume?: number;
 }
 
@@ -144,7 +151,7 @@ export async function loadConfig(): Promise<Config> {
       "http://127.0.0.1:11434",
     ollamaModel: process.env.OLLAMA_MODEL ?? fileConfig.ollamaModel ?? "llama3",
     claudeModel: process.env.CLAUDE_MODEL ?? fileConfig.claudeModel ?? "sonnet",
-    claudeEffort: process.env.CLAUDE_EFFORT ?? fileConfig.claudeEffort ?? "low",
+    claudeEffort: process.env.CLAUDE_EFFORT ?? fileConfig.claudeEffort ?? "high",
     customSystemPrompt:
       process.env.CLAUDE_SYSTEM_PROMPT ?? fileConfig.customSystemPrompt ?? "",
     // Zen's base URL is public (opencode.ai/docs/zen); Go's is not documented
@@ -183,6 +190,14 @@ export async function loadConfig(): Promise<Config> {
       "https://api.openai.com/v1",
     openaiModel:
       process.env.OPENAI_MODEL ?? fileConfig.openaiModel ?? "gpt-5",
+    openrouterApiKey:
+      process.env.OPENROUTER_API_KEY ?? fileConfig.openrouterApiKey ?? "",
+    openrouterBaseUrl:
+      process.env.OPENROUTER_BASE_URL ??
+      fileConfig.openrouterBaseUrl ??
+      "https://openrouter.ai/api/v1",
+    openrouterModel:
+      process.env.OPENROUTER_MODEL ?? fileConfig.openrouterModel ?? "openrouter/auto",
     volume: (() => {
       const env = process.env.VOLUME !== undefined ? Number(process.env.VOLUME) : undefined;
       const file = typeof fileConfig.volume === "number" ? fileConfig.volume : undefined;
@@ -225,6 +240,9 @@ const FILE_KEY_TO_ENV: Record<keyof FileConfig, string> = {
   openaiSubsToken: "OPENAI_SUBS_TOKEN",
   openaiBaseUrl: "OPENAI_BASE_URL",
   openaiModel: "OPENAI_MODEL",
+  openrouterApiKey: "OPENROUTER_API_KEY",
+  openrouterBaseUrl: "OPENROUTER_BASE_URL",
+  openrouterModel: "OPENROUTER_MODEL",
   volume: "VOLUME",
 };
 

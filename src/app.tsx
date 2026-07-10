@@ -674,6 +674,10 @@ export function App() {
       if (cfg.openaiAuthMode === "subs" && !cfg.openaiSubsToken)
         return "openai subs mode needs a subs token — edit the field first";
     }
+    if (provider === "openrouter") {
+      if (!cfg.openrouterApiKey) return "openrouter needs an api key — edit the field first";
+      if (!cfg.openrouterBaseUrl) return "openrouter needs a base url — edit the field first";
+    }
     return null;
   }
 
@@ -1337,7 +1341,10 @@ export function App() {
     !systemPromptOpen &&
     clarifyQuestions !== null;
 
-  const playingTrack = resolved?.resolved.find((t) => t.uri === currentlyPlayingUri);
+  const playingTrackIndex = resolved?.resolved.findIndex((t) => t.uri === currentlyPlayingUri) ?? -1;
+  const playingTrack = playingTrackIndex >= 0 ? resolved!.resolved[playingTrackIndex] : undefined;
+  const playingPosition =
+    playingTrackIndex >= 0 && resolved ? `${playingTrackIndex + 1}/${resolved.resolved.length}` : null;
   const nowPlaying = playingTrack ? `${playingTrack.artist} – ${playingTrack.title}` : null;
   const trackDurationMs = trackPos?.durationMs ?? playingTrack?.durationMs ?? null;
   // Logo only before the first prompt; frees vertical space afterwards. Also
@@ -1347,7 +1354,7 @@ export function App() {
   const inputCluster = (
     <>
       <PromptInput
-        placeholder="Search albums…  (/ for commands)"
+        placeholder="Describe a playlist…  (/ for commands)"
         value={input}
         onChange={(v) => {
           setInput(v);
@@ -1551,6 +1558,9 @@ export function App() {
                     />
                   )}
                   {inputCluster}
+                  {/* Absorbs leftover height so the player + status bar stay
+                      bottom-anchored now that ResultsList sizes to content. */}
+                  <box style={{ flexGrow: 1 }} />
                 </>
               )}
               {nowPlaying && !loading && !connecting ? (
@@ -1558,10 +1568,17 @@ export function App() {
                   <box style={{ flexDirection: "row", flexGrow: 1, flexShrink: 1, overflow: "hidden" }}>
                     <text>
                       <span fg={theme.subtext}> {isPlaying ? "▶" : "⏸"} </span>
+                      {playingPosition && <span fg={theme.muted}>{playingPosition} </span>}
                       {/* Ellipsis-truncate instead of letting flexbox hard-clip
                           mid-word; timer cluster on the right is ~36 cols. */}
                       <span fg={theme.muted}>
-                        {truncateLabel(nowPlaying, Math.max(10, width - (trackPos && trackDurationMs ? 40 : 5)))}
+                        {truncateLabel(
+                          nowPlaying,
+                          Math.max(
+                            10,
+                            width - (trackPos && trackDurationMs ? 40 : 5) - (playingPosition ? playingPosition.length + 1 : 0),
+                          ),
+                        )}
                       </span>
                     </text>
                   </box>

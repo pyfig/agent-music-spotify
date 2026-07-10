@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { useTerminalDimensions } from "@opentui/react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import type { AgentEvent } from "../agent/types";
-import { countTools, toLines, type TranscriptLine } from "./reasoning";
+import { countTools, toLines, type LineSegment } from "./reasoning";
 import { SPINNER, theme } from "./theme";
 
 interface ReasoningTranscriptProps {
@@ -18,9 +18,10 @@ interface ReasoningTranscriptProps {
   scrollRef?: React.RefObject<ScrollBoxRenderable | null>;
 }
 
-const TONE_FG: Record<TranscriptLine["tone"], string> = {
+const TONE_FG: Record<LineSegment["tone"], string> = {
   reasoning: theme.subtext,
   call: theme.accent,
+  args: theme.subtext,
   ok: theme.green,
   error: theme.red,
 };
@@ -48,14 +49,17 @@ export function ReasoningTranscript({ events, collapsed, spinnerFrame = 0, scrol
   }
 
   const lines = toLines(events);
-  // Same vertical budget as the resolved list so header + input + status fit.
+  // Same vertical budget as the resolved list, and filled the same way
+  // (flexGrow to maxHeight) so the input cluster lands on the same row
+  // while searching as it does once the resolved track list is showing.
   const maxHeight = Math.max(5, height - 15);
 
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minHeight: 3, maxHeight }}>
       <box style={{ flexDirection: "row", flexShrink: 0 }}>
+        {/* Phase/tool status lives in StatusBar only — this header is just the
+            agent identity glyph, not a second status line. */}
         <text fg={theme.accent}> {SPINNER[spinnerFrame % SPINNER.length]} music-agent</text>
-        <text fg={theme.subtext}> · thinking</text>
       </box>
       <scrollbox
         ref={scrollRef}
@@ -74,9 +78,22 @@ export function ReasoningTranscript({ events, collapsed, spinnerFrame = 0, scrol
           <text fg={theme.muted}> · working…</text>
         ) : (
           lines.map((line) => (
-            <text key={line.key} fg={TONE_FG[line.tone]} wrapMode="word">
-              {line.text}
-            </text>
+            // Marker in a fixed column, text in its own flex column: wrapped
+            // continuation lines land under the text, not under the marker.
+            <box key={line.key} style={{ flexDirection: "row" }}>
+              <box style={{ width: 2 + line.depth * 2, flexShrink: 0 }}>
+                <text fg={theme.muted}>{" ".repeat(line.depth * 2)}{line.marker}</text>
+              </box>
+              <box style={{ flexGrow: 1, flexShrink: 1 }}>
+                <text wrapMode="word">
+                  {line.segments.map((seg, i) => (
+                    <span key={i} fg={TONE_FG[seg.tone]}>
+                      {seg.text}
+                    </span>
+                  ))}
+                </text>
+              </box>
+            </box>
           ))
         )}
       </scrollbox>

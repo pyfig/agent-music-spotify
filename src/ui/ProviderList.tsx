@@ -29,6 +29,7 @@ export function ProviderList({ ollamaModels, focused, onPick, current }: Provide
     { name: "opencode: go", description: "opencode hosted (glm-5.2)", value: "opencode-go" },
     { name: "opencode: zen", description: "opencode hosted (zen)", value: "opencode-zen" },
     { name: "openai", description: "OpenAI Chat Completions (api / subs)", value: "openai" },
+    { name: "openrouter", description: "OpenRouter gateway (any vendor model)", value: "openrouter" },
     ...ollamaModels.map((m) => ({
       name: `ollama: ${m}`,
       description: "Local Ollama model",

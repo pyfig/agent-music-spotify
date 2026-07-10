@@ -19,10 +19,21 @@ interface StatusBarProps {
 
 const BAR_WIDTH = 10;
 
+// Volume gets its own short glyph/width so it never reads as a second
+// progress bar next to the resolving/track bars (both ━ at width 10).
+const VOLUME_BAR_WIDTH = 5;
+
+function volumeBarParts(volume: number): { filled: string; rest: string } {
+  const r = Math.max(0, Math.min(1, volume / 100));
+  const n = Math.round(r * VOLUME_BAR_WIDTH);
+  return { filled: "▮".repeat(n), rest: "▯".repeat(VOLUME_BAR_WIDTH - n) };
+}
+
 // Long provider:model labels (e.g. "opencode-go:deepseek-v4-flash") must not
 // push the backend indicator and key hints off the row — truncate with an
-// ellipsis instead of letting flexbox hard-clip mid-word.
-const MODEL_MAX = 32;
+// ellipsis instead of letting flexbox hard-clip mid-word. 24 leaves room for
+// the "✗ N excluded" tag on typical widths.
+const MODEL_MAX = 24;
 
 function progressBar(current: number, total: number): string {
   const { filled, rest } = barParts(total > 0 ? current / total : 0, BAR_WIDTH);
@@ -87,7 +98,13 @@ export function StatusBar({
               {" "}
               {backendLabel}
             </text>
-            {!!excludedCount && <text fg={theme.maroon}> · {excludedCount} excluded</text>}
+            {/* flexShrink 0: without it the overflow-hidden left box clips the
+                label to a bare red number that reads as noise. */}
+            {!!excludedCount && (
+              <text fg={theme.maroon} style={{ flexShrink: 0 }}>
+                {" "}· ✗ {excludedCount} excluded
+              </text>
+            )}
           </box>
           {/* Right: spinner + thinking/vol — keeps its width so it never clips. */}
           <box style={{ flexDirection: "row", flexShrink: 0, flexGrow: 1, justifyContent: "flex-end" }}>
@@ -101,9 +118,9 @@ export function StatusBar({
               <text fg={theme.maroon}> · 🔇 muted</text>
             ) : volume !== null ? (
               <text>
-                <span fg={theme.subtext}> · vol </span>
-                <span fg={theme.accent}>{barParts(volume / 100, BAR_WIDTH).filled}</span>
-                <span fg={theme.muted}>{barParts(volume / 100, BAR_WIDTH).rest}</span>
+                <span fg={theme.subtext}> · 🔊 </span>
+                <span fg={theme.yellow}>{volumeBarParts(volume).filled}</span>
+                <span fg={theme.muted}>{volumeBarParts(volume).rest}</span>
                 <span fg={theme.subtext}> {volume}%</span>
               </text>
             ) : null}
@@ -119,7 +136,9 @@ export function StatusBar({
               {loading ? " · generating…" : ""}
             </text>
             {!!excludedCount && !loading && !error ? (
-              <text fg={theme.maroon}> · {excludedCount} excluded</text>
+              <text fg={theme.maroon} style={{ flexShrink: 0 }}>
+                {" "}· ✗ {excludedCount} excluded
+              </text>
             ) : null}
           </box>
           {/* Right: hints + volume — keeps its width so hints never get clipped. */}
@@ -131,9 +150,9 @@ export function StatusBar({
               <text fg={theme.maroon}> 🔇 muted</text>
             ) : volume !== null ? (
               <text>
-                <span fg={theme.subtext}> vol </span>
-                <span fg={theme.accent}>{barParts(volume / 100, BAR_WIDTH).filled}</span>
-                <span fg={theme.muted}>{barParts(volume / 100, BAR_WIDTH).rest}</span>
+                <span fg={theme.subtext}> 🔊 </span>
+                <span fg={theme.yellow}>{volumeBarParts(volume).filled}</span>
+                <span fg={theme.muted}>{volumeBarParts(volume).rest}</span>
                 <span fg={theme.subtext}> {volume}%</span>
               </text>
             ) : null}
