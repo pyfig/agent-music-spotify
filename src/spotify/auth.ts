@@ -235,13 +235,17 @@ export async function openBrowser(url: string): Promise<void> {
   // treats `&`/`?` literally inside single quotes), interop wraps the
   // space-containing -Command element in double quotes without mangling
   // anything, and Start-Process hands the URL to the OS default browser.
+  // PowerShell single-quote escaping: '' is a literal ' inside a
+  // single-quoted string — without it a crafted URL could break out of the
+  // quoting and inject a command.
+  const psUrl = url.replace(/'/g, "''");
   const cmd =
     process.platform === "darwin"
       ? ["open", url]
       : process.platform === "win32"
-        ? ["powershell", "-NoProfile", "-Command", `Start-Process '${url}'`]
+        ? ["powershell", "-NoProfile", "-Command", `Start-Process '${psUrl}'`]
         : isWSL()
-          ? ["powershell.exe", "-NoProfile", "-Command", `Start-Process '${url}'`]
+          ? ["powershell.exe", "-NoProfile", "-Command", `Start-Process '${psUrl}'`]
           : ["xdg-open", url];
   try {
     Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore" });
