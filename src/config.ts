@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { chmodSync, mkdirSync } from "node:fs";
+import { sanitizeCredential } from "./util/sanitize";
 import type { MusicBackend } from "./music/types";
 
 const MUSIC_BACKENDS: MusicBackend[] = ["spotify", "soundcloud", "youtube-music"];
@@ -238,15 +239,7 @@ const NO_SANITIZE_KEYS = new Set<keyof FileConfig>(["customSystemPrompt", "volum
 // choke point so every provider gets a clean value regardless of source.
 function sanitizeFieldValue(key: keyof FileConfig, value: unknown): unknown {
   if (typeof value !== "string" || NO_SANITIZE_KEYS.has(key)) return value;
-  let v = value.trim();
-  if (
-    (v.startsWith('"') && v.endsWith('"') && v.length >= 2) ||
-    (v.startsWith("'") && v.endsWith("'") && v.length >= 2)
-  ) {
-    v = v.slice(1, -1).trim();
-  }
-  v = v.replace(/^bearer\s+/i, "");
-  return v;
+  return sanitizeCredential(value);
 }
 
 export async function saveConfig(partial: FileConfig): Promise<Config> {
