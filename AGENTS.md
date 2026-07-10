@@ -1,8 +1,8 @@
 ---
-description: amusic/vibedeck — Bun + @opentui/react terminal app that turns a mood into a Spotify playlist via an AI agent. Repo-specific rules for OpenCode sessions.
+description: amusic/music-agent — Bun + @opentui/react terminal app that turns a mood into a Spotify playlist via an AI agent. Repo-specific rules for OpenCode sessions.
 ---
 
-# amusic / vibedeck
+# amusic / music-agent
 
 Bun + [@opentui/react](https://github.com/anomalyco/opentui) TUI: an AI agent picks tracks, a music backend (Spotify / SoundCloud / YouTube Music) resolves and plays them.
 
@@ -20,7 +20,7 @@ No Node, npm, pnpm, yarn, vite, express, jest, vitest, better-sqlite3, dotenv. B
 | Name | What |
 |---|---|
 | `amusic` | installed user-facing command (`install.sh` links `~/.local/bin/amusic`) |
-| `vibedeck` | npm package name + `bin` name (`package.json`) |
+| `music-agent` | npm package name + `bin` name (`package.json`) |
 | `spotify-harness-tui` | local dir name + config dir `~/.config/spotify-harness-tui/` (hardcoded in `src/config.ts`) |
 | `agent-music-spotify` | GitHub repo (`pyfig/agent-music-spotify`) |
 
@@ -33,14 +33,14 @@ Do not run `bun run dev`, `bun src/index.tsx`, `./install.sh`, or `bun e2e_check
 Always drive the app through the tmux driver with a sandboxed `HOME`:
 
 ```bash
-.claude/skills/run-vibedeck/driver.sh start        # sandboxed launch, prints screen
-.claude/skills/run-vibedeck/driver.sh cap          # capture current screen
-.claude/skills/run-vibedeck/driver.sh type "/"     # type literal text
-.claude/skills/run-vibedeck/driver.sh keys Down    # tmux send-keys: Enter, Down, Tab, Escape, C-p, C-c
-.claude/skills/run-vibedeck/driver.sh stop
+.claude/skills/run-music-agent/driver.sh start        # sandboxed launch, prints screen
+.claude/skills/run-music-agent/driver.sh cap          # capture current screen
+.claude/skills/run-music-agent/driver.sh type "/"     # type literal text
+.claude/skills/run-music-agent/driver.sh keys Down    # tmux send-keys: Enter, Down, Tab, Escape, C-p, C-c
+.claude/skills/run-music-agent/driver.sh stop
 ```
 
-One key per `keys` call — `keys Down Down Enter` loses the Downs (state doesn't settle). Sandbox mode pre-seeds fake tokens whose `scopes` match `SCOPES` and uses `/tmp/vibedeck-sandbox` as `HOME`; real Spotify calls 401 there (expected). `start --real` uses your real `HOME` and will open the browser if not logged in — only with user intent.
+One key per `keys` call — `keys Down Down Enter` loses the Downs (state doesn't settle). Sandbox mode pre-seeds fake tokens whose `scopes` match `SCOPES` and uses `/tmp/music-agent-sandbox` as `HOME`; real Spotify calls 401 there (expected). `start --real` uses your real `HOME` and will open the browser if not logged in — only with user intent.
 
 ## No CI — every gate is local and manual
 
@@ -69,7 +69,7 @@ Audit: `grep -c FOO src/config.ts AGENTS.md README.md` — all three should be �
 
 ## SCOPES changes — double blast radius
 
-`SCOPES` (top of `src/spotify/auth.ts`) feeds `scopesSatisfy()`. Cached tokens whose scopes don't cover current `SCOPES` are **deleted**, forcing a full browser re-login for every user. Changing `SCOPES` also **breaks the driver fixtures** — update the tokens heredoc in `.claude/skills/run-vibedeck/driver.sh` in the same commit. Checklist: justify new scope in commit body → `bun test` (scope-mismatch cases in `tests/auth.test.ts`) → update driver.sh heredoc → `driver.sh start` once, confirm status bar shows `spotify ✓`.
+`SCOPES` (top of `src/spotify/auth.ts`) feeds `scopesSatisfy()`. Cached tokens whose scopes don't cover current `SCOPES` are **deleted**, forcing a full browser re-login for every user. Changing `SCOPES` also **breaks the driver fixtures** — update the tokens heredoc in `.claude/skills/run-music-agent/driver.sh` in the same commit. Checklist: justify new scope in commit body → `bun test` (scope-mismatch cases in `tests/auth.test.ts`) → update driver.sh heredoc → `driver.sh start` once, confirm status bar shows `spotify ✓`.
 
 `src/spotify/auth.ts` has the most incident history of any file (WSL browser launch via `powershell.exe`, scope-mismatch invalidation; the old port-8888 zombie-killer was replaced by an ephemeral-port listener). Don't "simplify" the platform ladder in `openBrowser()`.
 
@@ -122,7 +122,7 @@ These `.claude/skills/` skills hold the load-bearing detail — they're gitignor
 - `amusic-change-control` — full change classes, gates, the table that maps diff scope → required tests
 - `amusic-debugging-playbook` / `amusic-failure-archaeology` — symptom → cause triage
 - `amusic-build-and-env` — install paths, binary deps, self-updating CLI wrapper
-- `run-vibedeck` — driver flows, verified user paths, gotchas
+- `run-music-agent` — driver flows, verified user paths, gotchas
 - `music-apis-reference` — external API endpoints/quirks
 
 ## Project environment variables

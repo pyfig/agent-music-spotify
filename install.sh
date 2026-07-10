@@ -84,7 +84,7 @@ chmod +x "${BIN_DIR}/amusic"
 echo "installed: ${BIN_DIR}/amusic"
 
 # Keep the old command name working for existing users.
-ln -sf "${BIN_DIR}/amusic" "${BIN_DIR}/vibedeck"
+ln -sf "${BIN_DIR}/amusic" "${BIN_DIR}/music-agent"
 
 case ":${PATH}:" in
   *":${BIN_DIR}:"*) ;;

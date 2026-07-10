@@ -15,7 +15,7 @@ function modeOf(path: string): number {
 
 describe("secret file permissions", () => {
   posixOnly("writeTokens creates tokens.json with mode 600", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "vibedeck-perm-"));
+    const dir = mkdtempSync(join(tmpdir(), "music-agent-perm-"));
     try {
       await writeTokens({ configDir: dir } as Config, {
         accessToken: "tok",
@@ -30,7 +30,7 @@ describe("secret file permissions", () => {
   });
 
   posixOnly("hardenSecretFile tightens an existing wide-open file", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vibedeck-perm-"));
+    const dir = mkdtempSync(join(tmpdir(), "music-agent-perm-"));
     try {
       const file = join(dir, "config.json");
       writeFileSync(file, "{}");
@@ -47,7 +47,7 @@ describe("secret file permissions", () => {
   });
 
   posixOnly("ensureSecretDir creates dir with mode 700", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vibedeck-perm-"));
+    const dir = mkdtempSync(join(tmpdir(), "music-agent-perm-"));
     try {
       const nested = join(dir, "cfg");
       ensureSecretDir(nested);

@@ -73,7 +73,7 @@ describe("scope mismatch re-auth logic", () => {
   });
 
   test("readTokens returns null for missing file (backward compat path)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "vibedeck-test-"));
+    const dir = mkdtempSync(join(tmpdir(), "music-agent-test-"));
     const tokensPath = join(dir, "tokens.json");
     let tokens = null;
     try {
@@ -87,7 +87,7 @@ describe("scope mismatch re-auth logic", () => {
   });
 
   test("readTokens returns valid struct when file exists", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "vibedeck-test-"));
+    const dir = mkdtempSync(join(tmpdir(), "music-agent-test-"));
     const tokensPath = join(dir, "tokens.json");
     const data = {
       accessToken: "test-tok",

@@ -14,7 +14,7 @@ import {
 } from "../src/core/history";
 
 function tempConfig() {
-  return { configDir: mkdtempSync(join(tmpdir(), "vibedeck-history-")) };
+  return { configDir: mkdtempSync(join(tmpdir(), "music-agent-history-")) };
 }
 
 function entry(header: string, title = "t"): HistoryEntry {
