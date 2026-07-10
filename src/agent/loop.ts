@@ -75,19 +75,58 @@ function playlistFromFinalizeArgs(args: Record<string, unknown>): PlaylistRec {
   return { name, tracks, artists };
 }
 
+/** Query-style tools where `"Radiohead "` and `"radiohead"` are the same
+ * lookup — their string args are case/whitespace-folded in the dedup key
+ * (key only; the real dispatch keeps the original args). */
+const NORMALIZED_KEY_TOOLS = new Set(["searchTrack", "searchArtist", "getArtistTopTracks", "web_search"]);
+
 /**
  * Stable dedup key for a tool call: name + args JSON with object keys sorted,
  * so `{a,b}` and `{b,a}` collide as intended.
  */
 function callKey(name: string, args: Record<string, unknown>): string {
+  const normalize = NORMALIZED_KEY_TOOLS.has(name);
   const sorted = Object.keys(args)
     .sort()
     .reduce<Record<string, unknown>>((acc, k) => {
-      acc[k] = args[k];
+      const v = args[k];
+      acc[k] = normalize && typeof v === "string" ? v.trim().toLowerCase() : v;
       return acc;
     }, {});
   return `${name}:${JSON.stringify(sorted)}`;
 }
+
+/** Concurrency cap for tool dispatch within one iteration — enough to overlap
+ * network latency without hammering the music backend's rate limits. */
+const MAX_TOOL_CONCURRENCY = 4;
+
+/** Minimal counting semaphore: returns a runner that admits at most `limit`
+ * concurrent thunks, FIFO beyond that. */
+function semaphore(limit: number): <T>(fn: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const queue: (() => void)[] = [];
+  return async function run<T>(fn: () => Promise<T>): Promise<T> {
+    if (active >= limit) await new Promise<void>((resolve) => queue.push(resolve));
+    active++;
+    try {
+      return await fn();
+    } finally {
+      active--;
+      queue.shift()?.();
+    }
+  };
+}
+
+/** After this many failures of the exact same call, stop re-dispatching it and
+ * tell the model to change course instead of burning turns on a dead end. */
+const MAX_CALL_FAILURES = 2;
+const FAILED_TWICE_MESSAGE =
+  "this exact call has failed twice and will not be retried; choose a different approach or call finalize_playlist";
+
+/** Rough prompt-size ceiling (chars/4 ≈ tokens). Crossing it forces the
+ * rescue ladder early — better a finalize on partial research than a
+ * context-overflow 400 that kills the whole run. */
+const TOKEN_BUDGET = 80_000;
 
 const DUPLICATE_CALL_WARNING =
   "[duplicate call — you already called this tool with the same arguments; the result is unchanged and repeated below. Do NOT repeat tool calls; use the results you already have or call finalize_playlist.]";
@@ -230,6 +269,12 @@ export async function runAgentLoop(
   // is not re-dispatched: the cached result is replayed with a warning so the
   // model stops looping on the same query. clarify/finalize_playlist exempt.
   const seenCalls = new Map<string, unknown>();
+  // Failure counts per call signature: a call that errored MAX_CALL_FAILURES
+  // times is refused outright so the model changes course.
+  const failCounts = new Map<string, number>();
+  // One semaphore for the whole run: batches from consecutive iterations
+  // share the same backend, so the cap applies globally.
+  const limitDispatch = semaphore(MAX_TOOL_CONCURRENCY);
   const noteVerified = (t: unknown) => {
     const r = t as Record<string, unknown> | null;
     if (r && typeof r === "object" && typeof r.artist === "string" && typeof r.title === "string") {
@@ -336,6 +381,10 @@ export async function runAgentLoop(
         outcomes[idx] = { kind: "ok", result: seenCalls.get(key), duplicate: true };
         return;
       }
+      if (key !== null && (failCounts.get(key) ?? 0) >= MAX_CALL_FAILURES) {
+        outcomes[idx] = { kind: "error", message: FAILED_TWICE_MESSAGE };
+        return;
+      }
       let p: Promise<Outcome>;
       if (key !== null && inBatch.has(key)) {
         p = inBatch.get(key)!.then((o) => (o.kind === "ok" ? { ...o, duplicate: true } : o));
@@ -343,13 +392,16 @@ export async function runAgentLoop(
         const dispatch = (): Promise<Outcome> =>
           dispatchTool(call.name, call.args, opts.deps, opts.signal).then(
             (result): Outcome => ({ kind: "ok", result, duplicate: false }),
-            (e): Outcome => ({ kind: "error", message: e instanceof Error ? e.message : String(e) }),
+            (e): Outcome => {
+              if (key !== null) failCounts.set(key, (failCounts.get(key) ?? 0) + 1);
+              return { kind: "error", message: e instanceof Error ? e.message : String(e) };
+            },
           );
         if (call.name === "clarify") {
           p = clarifyChain.then(dispatch);
           clarifyChain = p;
         } else {
-          p = dispatch();
+          p = limitDispatch(dispatch);
           inBatch.set(key!, p);
         }
       }
@@ -470,7 +522,15 @@ export async function runAgentLoop(
       stalledTurns = 0;
     }
 
-    if (i === budget - 1) {
+    // Rough token estimate of what the next prompt would carry: the standing
+    // history plus this iteration's not-yet-appended turn. Crossing the
+    // budget forces the rescue ladder now, before a context-overflow 400.
+    const estimatedTokens =
+      (messages.reduce((n, m) => n + m.content.length, 0) +
+        lastText.length +
+        toolMessages.reduce((n, tm) => n + (tm?.content.length ?? 0), 0)) /
+      4;
+    if (i === budget - 1 || estimatedTokens > TOKEN_BUDGET) {
       // Budget exhausted without finalize_playlist. Rescue ladder — never die
       // with a maxIterations error if any usable playlist can be produced:
       // 1. One extra generate with ONLY finalize_playlist available.

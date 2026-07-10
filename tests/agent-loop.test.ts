@@ -1127,3 +1127,159 @@ describe("runAgentLoop native multi-turn transport", () => {
     }
   });
 });
+describe("runAgentLoop dispatch hardening", () => {
+  test("4 independent searches run concurrently (bounded by the semaphore)", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const DELAY = 30;
+    const music = fakeMusic({
+      searchTrack: async (artist, title) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, DELAY));
+        inFlight--;
+        return fakeTrack(`s:${title}`, artist, title);
+      },
+    });
+    let call = 0;
+    const provider = fromGenerate({
+      name: "batcher",
+      generate: async () => {
+        if (call++ === 0) {
+          return {
+            text: "",
+            toolCalls: [0, 1, 2, 3].map((j) => ({
+              id: `c${j}`,
+              name: "searchTrack",
+              args: { artist: `A${j}`, title: `T${j}` },
+            })),
+          };
+        }
+        return { text: "", toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A0", title: "T0" }], artists: [] } }] };
+      },
+    });
+    const start = Date.now();
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music } });
+    expect(r.playlist.name).toBe("X");
+    expect(maxInFlight).toBe(4);
+    // Concurrent, not serial: 4 × 30ms sequentially would be ≥120ms.
+    expect(Date.now() - start).toBeLessThan(4 * DELAY);
+  });
+
+  test("a 5th simultaneous call waits for a semaphore slot", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const music = fakeMusic({
+      searchTrack: async (artist, title) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 10));
+        inFlight--;
+        return fakeTrack(`s:${title}`, artist, title);
+      },
+    });
+    let call = 0;
+    const provider = fromGenerate({
+      name: "flood",
+      generate: async () => {
+        if (call++ === 0) {
+          return {
+            text: "",
+            toolCalls: [0, 1, 2, 3, 4, 5].map((j) => ({
+              id: `c${j}`,
+              name: "searchTrack",
+              args: { artist: `A${j}`, title: `T${j}` },
+            })),
+          };
+        }
+        return { text: "", toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A0", title: "T0" }], artists: [] } }] };
+      },
+    });
+    await runAgentLoop(provider, "sys", "user", { deps: { music } });
+    expect(maxInFlight).toBe(4);
+  });
+
+  test("dedup key folds case and whitespace for query-style tools", async () => {
+    let searches = 0;
+    const music = fakeMusic({
+      searchTrack: async (artist, title) => {
+        searches++;
+        return fakeTrack("spotify:track:x", artist, title);
+      },
+    });
+    const prompts: string[] = [];
+    let call = 0;
+    const provider = fromGenerate({
+      name: "sloppy",
+      generate: async (_system, user) => {
+        prompts.push(user);
+        call++;
+        if (call === 1) return { text: "", toolCalls: [{ id: "c1", name: "searchTrack", args: { artist: "Radiohead ", title: "Creep" } }] };
+        if (call === 2) return { text: "", toolCalls: [{ id: "c2", name: "searchTrack", args: { artist: "radiohead", title: "creep" } }] };
+        return { text: "", toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "Radiohead", title: "Creep" }], artists: [] } }] };
+      },
+    });
+    await runAgentLoop(provider, "sys", "user", { deps: { music } });
+    expect(searches).toBe(1); // second spelling is a duplicate, not re-dispatched
+    expect(prompts[2]).toContain("[duplicate call");
+    // The real dispatch kept the original (untrimmed) args.
+    expect(prompts[1]).toContain("Radiohead ");
+  });
+
+  test("a call that failed twice is refused on the third attempt", async () => {
+    let attempts = 0;
+    const music = fakeMusic({
+      searchArtist: async () => {
+        attempts++;
+        throw new Error("backend down");
+      },
+    });
+    const prompts: string[] = [];
+    let call = 0;
+    const provider = fromGenerate({
+      name: "stubborn",
+      generate: async (_system, user) => {
+        prompts.push(user);
+        call++;
+        if (call <= 3) return { text: "", toolCalls: [{ id: `c${call}`, name: "searchArtist", args: { name: "A" } }] };
+        return { text: "", toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "X", tracks: [{ artist: "A", title: "B" }], artists: [] } }] };
+      },
+    });
+    await runAgentLoop(provider, "sys", "user", { deps: { music }, maxIterations: 8 });
+    expect(attempts).toBe(2); // third identical call never reaches the backend
+    expect(prompts[3]).toContain("will not be retried");
+  });
+
+  test("token budget overrun forces the rescue ladder early", async () => {
+    const fatTitle = "z".repeat(1900);
+    const music = fakeMusic({
+      searchTrack: async (artist, title) => fakeTrack("s:big", artist, title),
+    });
+    const seenTools: string[][] = [];
+    let call = 0;
+    const provider = fromGenerate({
+      name: "hoarder",
+      generate: async (_system, _user, _onToken, _signal, opts) => {
+        seenTools.push((opts?.tools ?? []).map((t) => t.name));
+        if (call++ === 0) {
+          // ~170 clipped 2KB results ≈ 340K chars ≈ 85K "tokens" — over budget
+          // after a single iteration, with plenty of loop budget left.
+          return {
+            text: "",
+            toolCalls: Array.from({ length: 170 }, (_, j) => ({
+              id: `c${j}`,
+              name: "searchTrack",
+              args: { artist: `A${j}`, title: `${fatTitle}${j}` },
+            })),
+          };
+        }
+        return { text: "", toolCalls: [{ id: "cf", name: "finalize_playlist", args: { name: "Saved", tracks: [{ artist: "A0", title: "T0" }], artists: [] } }] };
+      },
+    });
+    const r = await runAgentLoop(provider, "sys", "user", { deps: { music }, maxIterations: 8 });
+    expect(r.playlist.name).toBe("Saved");
+    // Second generate call is already the finalize-only rescue.
+    expect(seenTools.length).toBe(2);
+    expect(seenTools[1]).toEqual(["finalize_playlist"]);
+  });
+});
