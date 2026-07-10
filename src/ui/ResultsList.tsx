@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useTerminalDimensions } from "@opentui/react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import type { AgentEvent } from "../agent/types";
-import { theme } from "./theme";
+import { displayArtist, theme } from "./theme";
 import { ReasoningTranscript } from "./ReasoningTranscript";
 
 export interface ResultLine {
@@ -70,8 +70,14 @@ export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayi
   const indexWidth = String(lines.length).length;
 
   return (
+    // flexGrow fills to maxHeight the same way the loading-state
+    // ReasoningTranscript does, so the input cluster below always lands on
+    // the same row regardless of whether the list or the thinking log is
+    // what's currently showing above it.
     <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minHeight: 5, maxHeight }}>
-      {events.length > 0 && <ReasoningTranscript events={events} collapsed />}
+      {/* Once generation finishes the title row below already names the
+          playlist — a stale "thought · N tools" summary adds nothing. */}
+      {events.length > 0 && loading && <ReasoningTranscript events={events} collapsed />}
       {title && (
         <box style={{ flexDirection: "row", flexShrink: 0 }}>
           <text fg={theme.accent}> {title}</text>
@@ -96,14 +102,10 @@ export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayi
           const icon = isCurrentlyPlaying ? (isPlaying ? " ▶ " : " ⏸ ") : isSelected ? " ❯ " : "   ";
           // Title carries the row's tone; artist sits a step quieter unless the
           // row is playing (whole row green) or unresolved (whole row dimmed).
-          const titleFg = isCurrentlyPlaying
-            ? theme.green
-            : line.resolved
-              ? isSelected
-                ? theme.fg
-                : theme.subtext
-              : theme.muted;
-          const artistFg = isCurrentlyPlaying ? theme.green : isSelected ? theme.subtext : theme.muted;
+          // The cursor is conveyed by bg + ❯ only — brightening its text made
+          // it read as a second "active" track next to the green playing row.
+          const titleFg = isCurrentlyPlaying ? theme.green : line.resolved ? theme.subtext : theme.muted;
+          const artistFg = isCurrentlyPlaying ? theme.green : theme.muted;
           const rowBg = isSelected ? theme.surface1 : undefined;
           const num = String(i + 1).padStart(indexWidth);
           return (
@@ -123,7 +125,7 @@ export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayi
               <box style={{ flexGrow: 1, flexShrink: 1 }}>
                 {line.artist && line.title ? (
                   <text bg={rowBg} wrapMode="word">
-                    <span fg={artistFg}>{line.artist} — </span>
+                    <span fg={artistFg}>{displayArtist(line.artist)} — </span>
                     <span fg={titleFg}>{line.title}</span>
                     {line.resolved ? "" : <span fg={theme.red}>  not found</span>}
                   </text>

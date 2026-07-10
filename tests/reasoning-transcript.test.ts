@@ -47,30 +47,136 @@ describe("argSummary", () => {
   });
 });
 
+describe("toLines collapsing", () => {
+  const call = (id: string, name = "queueTrack"): AgentEvent => ({
+    kind: "tool_call",
+    id,
+    name,
+    args: { uri: id },
+  });
+  const res = (id: string, ok = true, result: unknown = "ok"): AgentEvent => ({
+    kind: "tool_result",
+    id,
+    name: "queueTrack",
+    ok,
+    result,
+  });
+  const text = (line: { segments: { text: string }[]; marker: string; depth: 0 | 1 }) =>
+    `${"  ".repeat(line.depth)}${line.marker} ${line.segments.map((s) => s.text).join("")}`;
+
+  test("two same-name calls stay uncollapsed", () => {
+    const lines = toLines([call("1"), res("1"), call("2"), res("2")]);
+    expect(lines.length).toBe(2);
+    expect(text(lines[0]!)).toContain("queueTrack(1)");
+    expect(text(lines[1]!)).toContain("queueTrack(2)");
+  });
+
+  test("run of 5 collapses to first call + tally line", () => {
+    const events = ["1", "2", "3", "4", "5"].flatMap((id) => [call(id), res(id)]);
+    const lines = toLines(events);
+    expect(lines.length).toBe(2);
+    expect(text(lines[0]!)).toContain("queueTrack(1)");
+    expect(text(lines[1]!)).toBe("⏺ queueTrack ×4 ✓ 4 ok");
+  });
+
+  test("reasoning breaks the run", () => {
+    const events: AgentEvent[] = [
+      call("1"),
+      res("1"),
+      call("2"),
+      res("2"),
+      { kind: "reasoning", delta: "hmm" },
+      call("3"),
+      res("3"),
+    ];
+    const lines = toLines(events);
+    // No group reaches 3 → all normal lines.
+    expect(lines.length).toBe(4);
+    expect(lines.every((l) => !text(l).includes("×"))).toBe(true);
+  });
+
+  test("failure in collapsed run shows tally with last error", () => {
+    const events: AgentEvent[] = [
+      call("1"),
+      res("1"),
+      call("2"),
+      res("2", false, { error: "boom" }),
+      call("3"),
+      res("3"),
+      call("4"),
+      res("4"),
+    ];
+    const lines = toLines(events);
+    expect(lines.length).toBe(2);
+    expect(text(lines[1]!)).toBe("⏺ queueTrack ×3 ✓ 2 / ✗ 1 boom");
+  });
+
+  test("pending results show progress tally while streaming", () => {
+    const events: AgentEvent[] = [call("1"), res("1"), call("2"), res("2"), call("3"), call("4")];
+    const lines = toLines(events);
+    expect(lines.length).toBe(2);
+    expect(text(lines[1]!)).toBe("⏺ queueTrack ×3 … 1/3 done");
+  });
+
+  test("different tool breaks the run", () => {
+    const events: AgentEvent[] = [
+      call("1"),
+      res("1"),
+      call("2"),
+      res("2"),
+      call("s1", "searchTrack"),
+      res("s1"),
+      call("3"),
+      res("3"),
+    ];
+    const lines = toLines(events);
+    expect(lines.length).toBe(4);
+  });
+});
+
 describe("resultSummary", () => {
   test("string passthrough", () => {
     expect(resultSummary("darker")).toBe("darker");
   });
-  test("picks uri, artist–title, and error", () => {
+  test("prefers artist–title over uri, error over both", () => {
     expect(resultSummary({ uri: "spotify:track:6f" })).toBe("spotify:track:6f");
+    expect(resultSummary({ uri: "ytm:e8J15cWYfzU", artist: "Bibio", title: "Lovers" })).toBe("Bibio – Lovers");
     expect(resultSummary({ artist: "Bibio", title: "Lovers" })).toBe("Bibio – Lovers");
-    expect(resultSummary({ error: "boom" })).toBe("boom");
+    expect(resultSummary({ error: "boom", uri: "ytm:x" })).toBe("boom");
   });
 });
 
 describe("toLines", () => {
-  test("renders reasoning, call, and result tones in order", () => {
+  const text = (l: { segments: { text: string }[]; marker: string; depth: 0 | 1 }) =>
+    `${"  ".repeat(l.depth)}${l.marker} ${l.segments.map((s) => s.text).join("")}`;
+
+  test("pairs results with their calls by id into one line", () => {
     const events: AgentEvent[] = [
       { kind: "reasoning", delta: "line one\n\nline two" },
       { kind: "tool_call", id: "c1", name: "searchTrack", args: { artist: "Burial", title: "Archangel" } },
-      { kind: "tool_result", id: "c1", name: "searchTrack", ok: true, result: { uri: "spotify:track:6f" } },
+      { kind: "tool_call", id: "c2", name: "searchTrack", args: { artist: "Bibio" } },
+      // Parallel dispatch: results arrive after both calls, out of order.
       { kind: "tool_result", id: "c2", name: "searchTrack", ok: false, result: { error: "not found" } },
+      { kind: "tool_result", id: "c1", name: "searchTrack", ok: true, result: { uri: "ytm:6f", artist: "Burial", title: "Archangel" } },
     ];
     const lines = toLines(events);
-    expect(lines.map((l) => l.tone)).toEqual(["reasoning", "reasoning", "call", "ok", "error"]);
-    expect(lines[0]!.text).toBe("· line one");
-    expect(lines[2]!.text).toBe("⏺ searchTrack(Burial, Archangel)");
-    expect(lines[3]!.text).toBe("  ⎿ ✓ spotify:track:6f");
-    expect(lines[4]!.text).toBe("  ⎿ ✗ not found");
+    expect(lines.length).toBe(4); // 2 reasoning + 2 merged call lines
+    expect(text(lines[0]!)).toBe("· line one");
+    expect(text(lines[2]!)).toBe("⏺ searchTrack(Burial, Archangel) ✓ Burial – Archangel");
+    expect(lines[2]!.segments.map((s) => s.tone)).toEqual(["call", "args", "ok"]);
+    expect(text(lines[3]!)).toBe("⏺ searchTrack(Bibio) ✗ not found");
+    expect(lines[3]!.segments.map((s) => s.tone)).toEqual(["call", "args", "error"]);
+  });
+
+  test("pending call renders without a result segment", () => {
+    const lines = toLines([{ kind: "tool_call", id: "c1", name: "searchTrack", args: { q: "x" } }]);
+    expect(text(lines[0]!)).toBe("⏺ searchTrack(x)");
+  });
+
+  test("orphan result without a matching call still renders", () => {
+    const lines = toLines([
+      { kind: "tool_result", id: "ghost", name: "searchTrack", ok: true, result: "done" },
+    ]);
+    expect(text(lines[0]!)).toBe("  ⎿ ✓ done");
   });
 });

@@ -1,7 +1,7 @@
 import { useTerminalDimensions } from "@opentui/react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import type { HistoryEntry } from "../core/history";
-import { toLines, type TranscriptLine } from "./reasoning";
+import { toLines, type LineSegment } from "./reasoning";
 import { selectTheme, theme } from "./theme";
 
 interface HistoryScreenProps {
@@ -15,9 +15,10 @@ interface HistoryScreenProps {
   scrollRef: React.RefObject<ScrollBoxRenderable | null>;
 }
 
-const TONE_FG: Record<TranscriptLine["tone"], string> = {
+const TONE_FG: Record<LineSegment["tone"], string> = {
   reasoning: theme.subtext,
   call: theme.accent,
+  args: theme.subtext,
   ok: theme.green,
   error: theme.red,
 };
@@ -63,9 +64,20 @@ export function HistoryScreen({ entries, detail, focused, onPick, scrollRef }: H
             <text fg={theme.muted}> (no reasoning recorded)</text>
           ) : (
             lines.map((line) => (
-              <text key={line.key} fg={TONE_FG[line.tone]} wrapMode="word">
-                {line.text}
-              </text>
+              <box key={line.key} style={{ flexDirection: "row" }}>
+                <box style={{ width: 2 + line.depth * 2, flexShrink: 0 }}>
+                  <text fg={theme.muted}>{" ".repeat(line.depth * 2)}{line.marker}</text>
+                </box>
+                <box style={{ flexGrow: 1, flexShrink: 1 }}>
+                  <text wrapMode="word">
+                    {line.segments.map((seg, i) => (
+                      <span key={i} fg={TONE_FG[seg.tone]}>
+                        {seg.text}
+                      </span>
+                    ))}
+                  </text>
+                </box>
+              </box>
             ))
           )}
         </scrollbox>

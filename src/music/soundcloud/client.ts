@@ -89,7 +89,15 @@ export class SoundCloudClient implements MusicProvider {
       throw new Error(`soundcloud track ${id} has no playable transcoding`);
     }
     const sep = chosen.url.includes("?") ? "&" : "?";
-    const res = await fetch(`${chosen.url}${sep}client_id=${this.clientId}`);
+    const streamUrl = () => `${chosen.url}${sep}client_id=${this.clientId}`;
+    let res = await fetch(streamUrl());
+    // A rotted client_id makes this endpoint 404 rather than 401/403, so the
+    // refresh-and-retry from `request()` doesn't kick in here — retry once here too.
+    if ((res.status === 401 || res.status === 403 || res.status === 404) && this.refreshClientId) {
+      this.clientId = await this.refreshClientId();
+      this.refreshClientId = undefined;
+      res = await fetch(streamUrl());
+    }
     if (!res.ok) {
       throw new Error(`soundcloud stream resolve failed: ${res.status}`);
     }

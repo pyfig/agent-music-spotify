@@ -151,6 +151,16 @@ const PROVIDER_CONFIGS: ProviderConfigDef[] = [
     ],
   },
   {
+    id: "openrouter",
+    title: "OpenRouter",
+    useLabel: "OpenRouter",
+    fields: [
+      { key: "openrouterApiKey", label: "api key", kind: "secret", placeholder: "sk-or-…" },
+      { key: "openrouterBaseUrl", label: "base url", kind: "text", placeholder: "https://openrouter.ai/api/v1" },
+      { key: "openrouterModel", label: "model", kind: "text", placeholder: "openrouter/auto or anthropic/claude-sonnet-4…" },
+    ],
+  },
+  {
     id: "ollama:settings",
     title: "Ollama daemon",
     fields: [

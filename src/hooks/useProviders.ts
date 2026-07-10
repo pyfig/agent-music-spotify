@@ -5,6 +5,7 @@ import { ClaudeCliProvider } from "../agent/providers/claude-cli";
 import { OllamaProvider } from "../agent/providers/ollama";
 import { OpencodeProvider } from "../agent/providers/opencode";
 import { OpenAIProvider } from "../agent/providers/openai";
+import { OpenRouterProvider } from "../agent/providers/openrouter";
 
 /** Constructs the active AgentProvider from config. Memoized on the config
  * object: saveConfig() returns a fresh Config, so any settings edit rebuilds
@@ -38,6 +39,13 @@ export function useProvider(config: Config | null): AgentProvider | null {
           model: config.openaiModel,
         });
       }
+      case "openrouter": {
+        return new OpenRouterProvider({
+          apiKey: config.openrouterApiKey,
+          baseUrl: config.openrouterBaseUrl,
+          model: config.openrouterModel,
+        });
+      }
       case "claude-cli":
       default:
         return new ClaudeCliProvider({
@@ -60,5 +68,7 @@ export function modelLabelFor(config: Config | null): string {
         ? `opencode-zen:${config.opencodeZenModel}`
         : config.defaultProvider === "openai"
           ? `openai:${config.openaiModel} · ${config.openaiAuthMode}`
-          : `claude:${config.claudeModel} · effort:${config.claudeEffort}`;
+          : config.defaultProvider === "openrouter"
+            ? `openrouter:${config.openrouterModel}`
+            : `claude:${config.claudeModel} · effort:${config.claudeEffort}`;
 }
