@@ -1,5 +1,11 @@
-import type { AgentProvider, AgentResult, GenerateOptions, ProviderErrorInfo, ToolCall } from "../types";
+import type { AgentMessage, AgentProvider, AgentResult, GenerateOptions, ProviderErrorInfo, ToolCall } from "../types";
 import { toolChoiceForFamily, toolsForFamily } from "../tools";
+import {
+  toAnthropicMessages,
+  toGoogleContents,
+  toOpenAIChatMessages,
+  toResponsesInput,
+} from "./messages";
 
 /** Provider-local default response cap when the caller doesn't set opts.maxTokens. */
 const DEFAULT_MAX_TOKENS = 4096;
@@ -131,6 +137,16 @@ export class OpencodeProvider implements AgentProvider {
     signal?: AbortSignal,
     opts?: GenerateOptions,
   ): Promise<AgentResult> {
+    return this.generateMessages(system, [{ role: "user", content: user }], onToken, signal, opts);
+  }
+
+  async generateMessages(
+    system: string,
+    messages: AgentMessage[],
+    onToken?: (delta: string) => void,
+    signal?: AbortSignal,
+    opts?: GenerateOptions,
+  ): Promise<AgentResult> {
     if (!this.apiKey) {
       throw new Error(
         `opencode provider "${this.name}" requires OPENCODE_API_KEY to be set`,
@@ -153,7 +169,7 @@ export class OpencodeProvider implements AgentProvider {
     const forced = tools && opts?.toolChoice ? toolChoiceForFamily(family, opts.toolChoice.name) : undefined;
 
     try {
-      return await this.request(family, headers, label, system, user, tools, forced, onToken, signal, opts);
+      return await this.request(family, headers, label, system, messages, tools, forced, onToken, signal, opts);
     } catch (e) {
       // Some upstreams behind the gateway (e.g. deepseek on the Go tier)
       // reject a forced tool_choice, a reasoning knob, or a non-default
@@ -165,7 +181,7 @@ export class OpencodeProvider implements AgentProvider {
         const degraded: GenerateOptions | undefined = opts
           ? { ...opts, reasoningEffort: undefined, maxTokens: undefined }
           : opts;
-        return this.request(family, headers, label, system, user, tools, undefined, onToken, signal, degraded);
+        return this.request(family, headers, label, system, messages, tools, undefined, onToken, signal, degraded);
       }
       throw e;
     }
@@ -176,7 +192,7 @@ export class OpencodeProvider implements AgentProvider {
     headers: Record<string, string>,
     label: string,
     system: string,
-    user: string,
+    messages: AgentMessage[],
     tools: unknown,
     choice: Record<string, unknown> | undefined,
     onToken?: (delta: string) => void,
@@ -202,7 +218,7 @@ export class OpencodeProvider implements AgentProvider {
             max_tokens: budget ? baseMax + budget : baseMax,
             system,
             stream: true,
-            messages: [{ role: "user", content: user }],
+            messages: toAnthropicMessages(messages),
             ...(tools ? { tools } : {}),
             ...(choice ?? {}),
             ...(budget ? { thinking: { type: "enabled", budget_tokens: budget } } : {}),
@@ -221,7 +237,7 @@ export class OpencodeProvider implements AgentProvider {
           body: JSON.stringify({
             model: this.model,
             instructions: system,
-            input: user,
+            input: toResponsesInput(messages),
             stream: true,
             max_output_tokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
             ...(tools ? { tools } : {}),
@@ -242,7 +258,7 @@ export class OpencodeProvider implements AgentProvider {
           signal,
           headers,
           body: JSON.stringify({
-            contents: [{ role: "user", parts: [{ text: user }] }],
+            contents: toGoogleContents(messages),
             systemInstruction: { parts: [{ text: system }] },
             generationConfig: {
               maxOutputTokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
@@ -269,10 +285,7 @@ export class OpencodeProvider implements AgentProvider {
             model: this.model,
             stream: true,
             max_completion_tokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
-            messages: [
-              { role: "system", content: system },
-              { role: "user", content: user },
-            ],
+            messages: toOpenAIChatMessages(system, messages),
             ...(tools ? { tools, tool_choice: "auto" } : {}),
             ...(choice ?? {}),
             ...(opts?.reasoningEffort

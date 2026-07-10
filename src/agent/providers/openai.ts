@@ -1,6 +1,7 @@
-import type { AgentProvider, AgentResult, GenerateOptions, ProviderErrorInfo } from "../types";
+import type { AgentMessage, AgentProvider, AgentResult, GenerateOptions, ProviderErrorInfo } from "../types";
 import { consumeSseStream, parseRetryAfter } from "./opencode";
 import { toolChoiceForFamily, toolsForOpenAIChat } from "../tools";
+import { toOpenAIChatMessages } from "./messages";
 
 const DEFAULT_MAX_TOKENS = 4096;
 
@@ -78,6 +79,16 @@ export class OpenAIProvider implements AgentProvider {
     signal?: AbortSignal,
     opts?: GenerateOptions,
   ): Promise<AgentResult> {
+    return this.generateMessages(system, [{ role: "user", content: user }], onToken, signal, opts);
+  }
+
+  async generateMessages(
+    system: string,
+    messages: AgentMessage[],
+    onToken?: (delta: string) => void,
+    signal?: AbortSignal,
+    opts?: GenerateOptions,
+  ): Promise<AgentResult> {
     if (!this.baseUrl) {
       throw new Error("openai provider requires OPENAI_BASE_URL to be set");
     }
@@ -93,10 +104,7 @@ export class OpenAIProvider implements AgentProvider {
         model: this.model,
         stream: true,
         max_completion_tokens: opts?.maxTokens ?? DEFAULT_MAX_TOKENS,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
+        messages: toOpenAIChatMessages(system, messages),
         ...(toolsPayload ? { tools: toolsPayload, tool_choice: "auto" } : {}),
         ...(toolsPayload && opts?.toolChoice
           ? toolChoiceForFamily("openai-compat", opts.toolChoice.name)

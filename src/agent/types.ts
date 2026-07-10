@@ -19,14 +19,13 @@ export interface AgentResult {
   toolCalls?: ToolCall[];
 }
 
-/** One turn in a native multi-turn transport, for providers that implement
- * AgentProvider.generateMessages instead of (or in addition to) the joined-
- * string `generate`. The loop builds this array append-only so a caching
- * provider can key off a stable prefix. */
+/** One turn in the native multi-turn transport (`AgentProvider.generateMessages`).
+ * The loop builds this array append-only so a caching provider can key off a
+ * stable prefix; only compaction may rewrite the older span. */
 export type AgentMessage =
   | { role: "user"; content: string }
   | { role: "assistant"; content: string; toolCalls?: ToolCall[] }
-  | { role: "tool"; callId: string; name: string; content: string };
+  | { role: "tool"; callId: string; name: string; content: string; isError?: boolean };
 
 /**
  * One ordered event in the agent's reasoning transcript. Reasoning deltas,
@@ -67,6 +66,10 @@ export interface ProviderErrorInfo {
 
 export interface AgentProvider {
   name: string;
+  /** Single-turn convenience: system + one user string. Providers implement
+   * this as a thin wrapper over `generateMessages` — it exists for callers
+   * outside the agent loop (title generation, prompt rotation, clarify
+   * pre-pass) that never carry history. */
   generate(
     system: string,
     user: string,
@@ -74,13 +77,12 @@ export interface AgentProvider {
     signal?: AbortSignal,
     opts?: GenerateOptions,
   ): Promise<AgentResult>;
-  /** Optional native multi-turn transport. Providers that implement this
-   * receive the full message history each turn instead of one growing user
-   * string, and are the only providers that can carry prompt-cache
-   * breakpoints. Providers without it are dispatched through `generate` with
-   * the loop's existing joined-string transport — behavior is identical to
-   * today. */
-  generateMessages?(
+  /** Native multi-turn transport: the full message history each turn, with
+   * tool calls/results in the provider family's wire format (tool_use blocks,
+   * assistant.tool_calls, function_call items, functionResponse parts).
+   * Providers with no native history format (claude-cli) flatten to text
+   * internally — the loop never does that itself. */
+  generateMessages(
     system: string,
     messages: AgentMessage[],
     onToken?: (delta: string) => void,

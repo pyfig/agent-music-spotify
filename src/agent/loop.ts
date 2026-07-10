@@ -132,28 +132,18 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * provider.generate with retry+backoff on transient errors (429/5xx/network),
- * so one rate-limit blip doesn't kill an otherwise healthy run. Honors a
- * provider-supplied Retry-After delay when present; abort, non-transient, and
- * context-overflow errors rethrow immediately.
+ * Runs a generation thunk with retry+backoff on transient errors
+ * (429/5xx/network), so one rate-limit blip doesn't kill an otherwise healthy
+ * run. Honors a provider-supplied Retry-After delay when present; abort,
+ * non-transient, and context-overflow errors rethrow immediately.
  */
 async function generateWithRetry(
-  generate: (
-    system: string,
-    user: string,
-    onToken?: (delta: string) => void,
-    signal?: AbortSignal,
-    opts?: GenerateOptions,
-  ) => Promise<AgentResult>,
-  system: string,
-  user: string,
-  onToken: ((delta: string) => void) | undefined,
+  run: () => Promise<AgentResult>,
   signal: AbortSignal | undefined,
-  genOpts: GenerateOptions,
 ): Promise<AgentResult> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await generate(system, user, onToken, signal, genOpts);
+      return await run();
     } catch (e) {
       if (signal?.aborted || attempt >= RETRY_DELAYS_MS.length || !isTransientError(e)) {
         throw e;
@@ -195,9 +185,10 @@ function slimResult(v: unknown): unknown {
   return v;
 }
 
-/** Accumulated [tool results] blocks larger than this get compacted into a
- * deterministic digest (codex-style /compact, but without an LLM call). */
-const COMPACT_THRESHOLD = 12_000;
+/** Once the summed content length of the message history crosses this, the
+ * span older than the last two iterations is folded into a deterministic
+ * digest (codex-style /compact, but without an LLM call). */
+const COMPACT_THRESHOLD = 60_000;
 
 /** Verified-track target when the request doesn't name a count: once reached,
  * the loop demands finalize instead of nudging "continue". */
@@ -255,23 +246,21 @@ export async function runAgentLoop(
     opts.onEvent?.({ kind: "reasoning", delta });
   };
 
-  // The initial request stays verbatim; per-turn tool-result blocks accumulate
-  // separately so they can be compacted once they outgrow the threshold.
-  const baseUser = user;
-  let blocks: string[] = [];
-  // Append-only native-transport mirror of the same conversation `blocks`
-  // encodes as a joined string. Only consumed when the provider implements
-  // generateMessages (Task 6+); otherwise it's built but never read — cheap
-  // bookkeeping, not a behavior change. Never rewritten except by compaction
-  // (Phase B3), so a caching provider can key off a stable prefix.
-  const messages: AgentMessage[] = [{ role: "user", content: baseUser }];
+  // The conversation lives here, append-only: the original request, then per
+  // iteration an assistant turn (text + toolCalls), one tool message per
+  // call, and a user continuation. Only compaction may rewrite the old span,
+  // so a caching provider can key off a stable prefix.
+  let messages: AgentMessage[] = [{ role: "user", content: user }];
+  // messages.length at the start of each iteration's assistant turn —
+  // compaction uses these to keep the last two iterations verbatim.
+  let iterationStarts: number[] = [];
 
   // Dynamic budget: starts at maxIterations, extended by clarify-only turns
   // (they gather requirements, not research) up to a hard cap, and effectively
   // shortened by the sufficiency/stall demands below.
   let budget = maxIterations;
   const hardCap = maxIterations + MAX_CLARIFY_EXTENSIONS;
-  const target = targetTrackCount(baseUser);
+  const target = targetTrackCount(user);
   let stalledTurns = 0;
   // One-shot guard: a finalize_playlist whose tracks are mostly unverified is
   // bounced back once with instructions to verify — hallucinated titles would
@@ -295,23 +284,10 @@ export async function runAgentLoop(
       ...(forcedFirstTurn ? { toolChoice: { name: opts.firstTurnToolChoice! } } : {}),
       ...(effort ? { reasoningEffort: effort } : {}),
     };
-    const result: AgentResult = provider.generateMessages
-      ? await generateWithRetry(
-          (s, _u, tok, sig, o) => provider.generateMessages!(s, messages, tok, sig, o),
-          system,
-          user,
-          opts.onToken,
-          opts.signal,
-          genOpts,
-        )
-      : await generateWithRetry(
-          (s, u, tok, sig, o) => provider.generate(s, u, tok, sig, o),
-          system,
-          user,
-          opts.onToken,
-          opts.signal,
-          genOpts,
-        );
+    const result: AgentResult = await generateWithRetry(
+      () => provider.generateMessages(system, messages, opts.onToken, opts.signal, genOpts),
+      opts.signal,
+    );
     lastText = result.text;
 
     const calls = result.toolCalls ?? [];
@@ -323,14 +299,12 @@ export async function runAgentLoop(
       return { playlist: fallbackPlaylist(lastText), clarifyAnswers, iterations: i + 1, toolTrace };
     }
 
-    // Dispatch each tool call; aggregate results into the next user message
-    // is the provider's job when it supports multi-turn — but we still run
-    // every call locally for side-effects (searchTrack hits the backend).
-    // The loop is single-turn-with-tools in the provider's transport layer;
-    // multi-turn dispatch is achieved by emitting tool results as a follow-up
-    // user turn appended below.
+    // Dispatch each tool call locally, then feed the results back as native
+    // role:"tool" messages (call_id-linked) appended to the history below.
     const finalizeCall: ToolCall | null = calls.find((c) => c.name === "finalize_playlist") ?? null;
-    const resultLines: string[] = [];
+    // Per-call tool message for the next turn, in original call order.
+    // finalize_playlist only gets one when it is bounced back.
+    const toolMessages: (AgentMessage | null)[] = new Array(calls.length).fill(null);
     const verifiedBefore = verifiedTracks.length;
     const clarifyBefore = clarifyAnswers.length;
 
@@ -396,7 +370,7 @@ export async function runAgentLoop(
       if (outcome.kind === "error") {
         opts.callbacks?.onToolResult?.(call.name, { error: outcome.message });
         opts.onEvent?.({ kind: "tool_result", id: call.id, name: call.name, ok: false, result: { error: outcome.message } });
-        resultLines.push(`Tool ${call.name} error (call_id=${call.id}): ${clipResult(outcome.message)}`);
+        toolMessages[idx] = { role: "tool", callId: call.id, name: call.name, content: clipResult(outcome.message), isError: true };
         return;
       }
       const { result, duplicate } = outcome;
@@ -404,9 +378,12 @@ export async function runAgentLoop(
       opts.onEvent?.({ kind: "tool_result", id: call.id, name: call.name, ok: true, result });
       if (duplicate) {
         toolTrace[traceStart + idx] = `${call.name} (duplicate)`;
-        resultLines.push(
-          `Tool ${call.name} result (call_id=${call.id}): ${DUPLICATE_CALL_WARNING} ${clipResult(JSON.stringify(slimResult(result)))}`,
-        );
+        toolMessages[idx] = {
+          role: "tool",
+          callId: call.id,
+          name: call.name,
+          content: `${DUPLICATE_CALL_WARNING} ${clipResult(JSON.stringify(slimResult(result)))}`,
+        };
         return;
       }
       const key = call.name === "clarify" ? null : callKey(call.name, call.args);
@@ -418,13 +395,26 @@ export async function runAgentLoop(
         const q = typeof call.args.question === "string" ? call.args.question : "";
         clarifyAnswers.push({ question: q, answer: result });
       }
-      resultLines.push(
-        `Tool ${call.name} result (call_id=${call.id}): ${clipResult(JSON.stringify(slimResult(result)))}`,
-      );
+      toolMessages[idx] = {
+        role: "tool",
+        callId: call.id,
+        name: call.name,
+        content: clipResult(JSON.stringify(slimResult(result))),
+      };
     });
 
     let bouncedThisTurn = false;
     if (finalizeCall) {
+      const finalizeIdx = calls.indexOf(finalizeCall);
+      const bounce = (text: string) => {
+        toolMessages[finalizeIdx] = {
+          role: "tool",
+          callId: finalizeCall.id,
+          name: finalizeCall.name,
+          content: text,
+          isError: true,
+        };
+      };
       let playlist: PlaylistRec | null = null;
       try {
         playlist = playlistFromFinalizeArgs(finalizeCall.args);
@@ -433,9 +423,9 @@ export async function runAgentLoop(
         bouncedThisTurn = true;
         stalledTurns = 0; // explicit new instruction — not a stall
         const msg = e instanceof Error ? e.message : String(e);
-        resultLines.push(
-          `[finalize_playlist rejected: ${msg} Call finalize_playlist again with a non-empty "name" string ` +
-            `and a "tracks" array of {artist,title} objects. Do not restate your analysis of the request.]`,
+        bounce(
+          `finalize_playlist rejected: ${msg} Call finalize_playlist again with a non-empty "name" string ` +
+            `and a "tracks" array of {artist,title} objects. Do not restate your analysis of the request.`,
         );
       }
       if (playlist) {
@@ -452,10 +442,10 @@ export async function runAgentLoop(
           finalizeBounced = true;
           bouncedThisTurn = true;
           stalledTurns = 0; // explicit new instruction — not a stall
-          resultLines.push(
-            `[finalize rejected: ${unverified.length} of ${playlist.tracks.length} tracks are unverified and will be dropped if they don't exist. ` +
+          bounce(
+            `finalize rejected: ${unverified.length} of ${playlist.tracks.length} tracks are unverified and will be dropped if they don't exist. ` +
               `Verify them with searchTrack — batch ALL of them in ONE turn — or replace them with verified tracks, then call finalize_playlist again. ` +
-              `Unverified: ${unverified.slice(0, 30).map((t) => `${t.artist} – ${t.title}`).join("; ")}]`,
+              `Unverified: ${unverified.slice(0, 30).map((t) => `${t.artist} – ${t.title}`).join("; ")}`,
           );
         } else {
           return { playlist, clarifyAnswers, iterations: i + 1, toolTrace };
@@ -489,19 +479,24 @@ export async function runAgentLoop(
       try {
         opts.onProgress?.("thinking");
         const finalizeOnly = tools.filter((t) => t.name === "finalize_playlist");
-        const rescue = await generateWithRetry(
-          (s, u, tok, sig, o) => provider.generate(s, u, tok, sig, o),
-          system,
-          `${user}\n\nYou are out of research budget. Call finalize_playlist NOW with your best tracklist based on everything above. It is the only tool available.`,
-          opts.onToken,
-          opts.signal,
+        const rescueMessages: AgentMessage[] = [
+          ...messages,
           {
-            tools: finalizeOnly,
-            onReasoning: emitReasoning,
-            toolChoice: { name: "finalize_playlist" },
-            reasoningEffort: "low",
-            maxTokens: 2048,
+            role: "user",
+            content:
+              "You are out of research budget. Call finalize_playlist NOW with your best tracklist based on everything above. It is the only tool available.",
           },
+        ];
+        const rescue = await generateWithRetry(
+          () =>
+            provider.generateMessages(system, rescueMessages, opts.onToken, opts.signal, {
+              tools: finalizeOnly,
+              onReasoning: emitReasoning,
+              toolChoice: { name: "finalize_playlist" },
+              reasoningEffort: "low",
+              maxTokens: 2048,
+            }),
+          opts.signal,
         );
         const rescueFinalize = (rescue.toolCalls ?? []).find((c) => c.name === "finalize_playlist");
         if (rescueFinalize) {
@@ -536,10 +531,8 @@ export async function runAgentLoop(
       );
     }
 
-    // Feed the tool results back to the model as a follow-up turn. Providers
-    // that don't natively support multi-turn still gain a best-effort signal:
-    // we append the result summary to the user prompt and re-generate.
-    // The `user` variable is rebound for the next iteration; `system` stays.
+    // Feed the tool results back as native history: assistant turn (text +
+    // toolCalls), one role:"tool" message per call, then a user continuation.
     // On the penultimate iteration, stop nudging and demand finalize — models
     // that keep researching otherwise burn the last slot on another tool call
     // and the loop dies with maxIterations exceeded.
@@ -563,23 +556,23 @@ export async function runAgentLoop(
         : softDemand
           ? "You already have enough verified tracks. Call finalize_playlist next — at most ONE final batched verification turn before it if some picks are still unverified. Do not restate your analysis of the request."
           : "Now continue. If you have enough information, call finalize_playlist. Do not restate your analysis of the request — continue from your previous reasoning; only new thoughts.";
+    iterationStarts.push(messages.length);
     messages.push({ role: "assistant", content: lastText, toolCalls: calls });
-    calls.forEach((call, idx) => {
-      const line =
-        call.name === "finalize_playlist"
-          ? JSON.stringify(call.args)
-          : outcomes[idx]!.kind === "error"
-            ? `error: ${(outcomes[idx] as { message: string }).message}`
-            : JSON.stringify(slimResult((outcomes[idx] as { result: unknown }).result));
-      messages.push({ role: "tool", callId: call.id, name: call.name, content: clipResult(line) });
-    });
-    blocks.push(`[tool results]\n${resultLines.join("\n")}`);
-    // Compaction: when the accumulated research history outgrows the budget,
-    // fold everything but the newest block into a deterministic digest —
+    for (const tm of toolMessages) {
+      // null only for an accepted finalize (loop returned) — bounced ones
+      // carry their rejection text as an isError tool result.
+      if (tm) messages.push(tm);
+    }
+    messages.push({ role: "user", content: continuation });
+
+    // Compaction: when the history outgrows the threshold, fold everything
+    // older than the last two iterations into a deterministic digest —
     // verified tracks + tools already called + clarify answers cover what the
-    // model needs to keep going without re-reading full tool output.
-    const historyLen = blocks.reduce((n, b) => n + b.length, 0);
-    if (historyLen > COMPACT_THRESHOLD && blocks.length > 1) {
+    // model needs to keep going without re-reading full tool output. The
+    // original request (messages[0]) always survives verbatim.
+    const totalChars = messages.reduce((n, m) => n + m.content.length, 0);
+    if (totalChars > COMPACT_THRESHOLD && iterationStarts.length > 2) {
+      const cutoff = iterationStarts[iterationStarts.length - 2]!;
       // The digest itself must stay bounded: cap the track list and clip each
       // line (a pathological backend title must not defeat compaction), and
       // summarize tool usage as name×count instead of the full trace.
@@ -593,19 +586,19 @@ export async function runAgentLoop(
       for (const name of toolTrace) toolCounts.set(name, (toolCounts.get(name) ?? 0) + 1);
       const toolSummary = [...toolCounts.entries()].map(([n, c]) => `${n}×${c}`).join(", ");
       const digest = [
-        "[compacted research digest — earlier tool results were summarized]",
+        "[compacted research digest — earlier tool results elided]",
         trackLines.length > 0
-          ? `Verified tracks so far:\n${trackLines.join("\n")}`
+          ? `Verified so far:\n${trackLines.join("\n")}`
           : "No tracks verified yet.",
         `Tools already called: ${toolSummary}. Do not repeat these calls.`,
         ...(clarifyAnswers.length > 0
           ? [`Clarify answers: ${clarifyAnswers.map((a) => `${a.question} → ${a.answer}`).join("; ")}`]
           : []),
       ].join("\n");
-      blocks = [digest, blocks[blocks.length - 1]!];
+      messages = [messages[0]!, { role: "user", content: digest }, ...messages.slice(cutoff)];
+      const shift = cutoff - 2;
+      iterationStarts = iterationStarts.slice(-2).map((s) => s - shift);
     }
-    user = [baseUser, ...blocks, continuation].join("\n\n");
-    messages.push({ role: "user", content: continuation });
   }
 
   // Unreachable: the loop either returns or throws above.

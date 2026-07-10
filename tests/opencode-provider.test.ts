@@ -96,7 +96,7 @@ describe("OpencodeProvider model-family routing", () => {
     expect(text).toBe("hello");
     expect(calls[0]!.url).toBe("https://opencode.ai/zen/v1/responses");
     expect(calls[0]!.body.instructions).toBe("sys");
-    expect(calls[0]!.body.input).toBe("hi");
+    expect(calls[0]!.body.input).toEqual([{ role: "user", content: "hi" }]);
   });
 
   test("anthropic family (minimax) hits /messages, parses content_block_delta", async () => {
@@ -582,5 +582,112 @@ describe("OpencodeProvider reasoning effort mapping", () => {
     expect(bodies[1].tool_choice).toBe("auto");
     expect(bodies[1].reasoning_effort).toBeUndefined();
     expect(bodies[1].max_completion_tokens).toBe(4096);
+  });
+});
+
+describe("OpencodeProvider multi-turn history serialization", () => {
+  // One shared canonical history: user ask → assistant tool call → tool result → continuation.
+  const history = [
+    { role: "user" as const, content: "find tracks" },
+    {
+      role: "assistant" as const,
+      content: "searching",
+      toolCalls: [{ id: "call_1", name: "searchTrack", args: { artist: "A", title: "B" } }],
+    },
+    { role: "tool" as const, callId: "call_1", name: "searchTrack", content: '{"uri":"s:1"}' },
+    { role: "user" as const, content: "continue" },
+  ];
+
+  function providerFor(model: string): OpencodeProvider {
+    return new OpencodeProvider({
+      name: "opencode-zen",
+      apiKey: "k",
+      baseUrl: "https://opencode.ai/zen/v1",
+      model,
+    });
+  }
+
+  test("anthropic family: tool_use block + tool_result block linked by id", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } })]));
+    await providerFor("claude-sonnet-5").generateMessages("sys", history);
+    expect(calls[0]!.body.system).toBe("sys");
+    expect(calls[0]!.body.messages).toEqual([
+      { role: "user", content: "find tracks" },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "searching" },
+          { type: "tool_use", id: "call_1", name: "searchTrack", input: { artist: "A", title: "B" } },
+        ],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: '{"uri":"s:1"}' }] },
+      { role: "user", content: "continue" },
+    ]);
+  });
+
+  test("openai-compat family: assistant.tool_calls + role:'tool' message", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ choices: [{ delta: { content: "ok" } }] }), "[DONE]"]));
+    await providerFor("glm-5.2").generateMessages("sys", history);
+    expect(calls[0]!.body.messages).toEqual([
+      { role: "system", content: "sys" },
+      { role: "user", content: "find tracks" },
+      {
+        role: "assistant",
+        content: "searching",
+        tool_calls: [
+          { id: "call_1", type: "function", function: { name: "searchTrack", arguments: '{"artist":"A","title":"B"}' } },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_1", content: '{"uri":"s:1"}' },
+      { role: "user", content: "continue" },
+    ]);
+  });
+
+  test("openai-responses family: function_call + function_call_output items", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "response.output_text.delta", delta: "ok" })]));
+    await providerFor("gpt-5.5").generateMessages("sys", history);
+    expect(calls[0]!.body.input).toEqual([
+      { role: "user", content: "find tracks" },
+      { role: "assistant", content: "searching" },
+      { type: "function_call", call_id: "call_1", name: "searchTrack", arguments: '{"artist":"A","title":"B"}' },
+      { type: "function_call_output", call_id: "call_1", output: '{"uri":"s:1"}' },
+      { role: "user", content: "continue" },
+    ]);
+  });
+
+  test("google family: functionCall part + functionResponse part", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] } }] })]));
+    await providerFor("gemini-3-pro").generateMessages("sys", history);
+    expect(calls[0]!.body.contents).toEqual([
+      { role: "user", parts: [{ text: "find tracks" }] },
+      {
+        role: "model",
+        parts: [
+          { text: "searching" },
+          { functionCall: { name: "searchTrack", args: { artist: "A", title: "B" } } },
+        ],
+      },
+      { role: "user", parts: [{ functionResponse: { name: "searchTrack", response: { result: '{"uri":"s:1"}' } } }] },
+      { role: "user", parts: [{ text: "continue" }] },
+    ]);
+  });
+
+  test("error tool result carries is_error on the anthropic wire", async () => {
+    const { calls, respond } = mockFetch();
+    respond(sseResponse([JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } })]));
+    const errHistory = [
+      history[0]!,
+      history[1]!,
+      { role: "tool" as const, callId: "call_1", name: "searchTrack", content: "boom", isError: true },
+    ];
+    await providerFor("claude-sonnet-5").generateMessages("sys", errHistory);
+    expect(calls[0]!.body.messages[2]).toEqual({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "call_1", content: "boom", is_error: true }],
+    });
   });
 });

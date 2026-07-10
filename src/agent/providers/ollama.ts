@@ -1,5 +1,6 @@
-import type { AgentProvider, AgentResult, GenerateOptions, ToolCall } from "../types";
+import type { AgentMessage, AgentProvider, AgentResult, GenerateOptions, ToolCall } from "../types";
 import { toolsForOpenAIChat } from "../tools";
+import { toOpenAIChatMessages } from "./messages";
 
 export interface OllamaConfig {
   url: string;
@@ -21,6 +22,16 @@ export class OllamaProvider implements AgentProvider {
     signal?: AbortSignal,
     opts?: GenerateOptions,
   ): Promise<AgentResult> {
+    return this.generateMessages(system, [{ role: "user", content: user }], onToken, signal, opts);
+  }
+
+  async generateMessages(
+    system: string,
+    messages: AgentMessage[],
+    onToken?: (delta: string) => void,
+    signal?: AbortSignal,
+    opts?: GenerateOptions,
+  ): Promise<AgentResult> {
     // Ollama tool support is opt-in via `opts.tools`; old models ignore the
     // field and emit plain JSON text — the loop's JSON fallback covers them.
     const toolsPayload = opts?.tools?.length ? toolsForOpenAIChat(opts.tools) : undefined;
@@ -32,10 +43,10 @@ export class OllamaProvider implements AgentProvider {
         model: this.config.model,
         format: "json",
         stream: true,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
+        // Ollama's /api/chat accepts the OpenAI chat shape (role:"tool"
+        // history included); models without native tool-role training simply
+        // read them as extra context.
+        messages: toOpenAIChatMessages(system, messages),
         ...(toolsPayload ? { tools: toolsPayload } : {}),
       }),
     });
