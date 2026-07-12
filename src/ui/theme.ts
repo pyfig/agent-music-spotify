@@ -25,6 +25,11 @@ export const theme = {
 // header so the "thinking" motif stays consistent across the UI.
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
+// LLM-reasoning spinner (thinking/clarifying phases + transcript header).
+// Every frame MUST be a single-cell BMP glyph — a wide frame would shift the
+// status row as the animation advances.
+export const THINKING_SPINNER = ["♪", "♫", "♬", "♩"] as const;
+
 // Единый рендер ━ баров: filled/rest раздельно, чтобы красить их разными
 // цветами (accent vs muted) — целиком accent-бар читается как 100% при любом
 // реальном значении. Оба сегмента из одного глифа: разный вес (━ vs ─)
