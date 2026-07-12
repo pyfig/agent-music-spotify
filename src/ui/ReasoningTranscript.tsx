@@ -1,5 +1,4 @@
 import { useRef } from "react";
-import { useTerminalDimensions } from "@opentui/react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import type { AgentEvent } from "../agent/types";
 import { countTools, toLines, type LineSegment } from "./reasoning";
@@ -16,6 +15,10 @@ interface ReasoningTranscriptProps {
    * transcript while the agent is still thinking (Up/Down land here instead of
    * moving a nonexistent selection). When omitted, a local ref is used. */
   scrollRef?: React.RefObject<ScrollBoxRenderable | null>;
+  /** Height cap from App's layoutBudget, forwarded by ResultsList. The
+   * transcript never measures the terminal itself (design D2). Unused when
+   * collapsed. */
+  maxHeight?: number;
 }
 
 const TONE_FG: Record<LineSegment["tone"], string> = {
@@ -26,8 +29,7 @@ const TONE_FG: Record<LineSegment["tone"], string> = {
   error: theme.red,
 };
 
-export function ReasoningTranscript({ events, collapsed, spinnerFrame = 0, scrollRef: externalScrollRef }: ReasoningTranscriptProps) {
-  const { height } = useTerminalDimensions();
+export function ReasoningTranscript({ events, collapsed, spinnerFrame = 0, scrollRef: externalScrollRef, maxHeight = 5 }: ReasoningTranscriptProps) {
   const localScrollRef = useRef<ScrollBoxRenderable>(null);
   const scrollRef = externalScrollRef ?? localScrollRef;
 
@@ -49,12 +51,11 @@ export function ReasoningTranscript({ events, collapsed, spinnerFrame = 0, scrol
   }
 
   const lines = toLines(events);
-  // Same vertical budget as the resolved list, and filled the same way
-  // (flexGrow to maxHeight) so the input cluster lands on the same row
-  // while searching as it does once the resolved track list is showing.
-  const maxHeight = Math.max(5, height - 15);
 
   return (
+    // flexGrow up to maxHeight: while events stream in, the transcript holds a
+    // stable full-budget height so the input cluster doesn't slide down a row
+    // every time a new reasoning line arrives.
     <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minHeight: 3, maxHeight }}>
       <box style={{ flexDirection: "row", flexShrink: 0 }}>
         {/* Phase/tool status lives in StatusBar only — this header is just the

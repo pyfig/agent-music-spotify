@@ -103,6 +103,8 @@ src/
     taste.ts                markdown taste memory + LLM rotation + tasteForClarify artist-name channel
   ui/                       dumb presentational components only — no IO, no business logic
                             DonutAnimation + ReasoningPane render reasoning tail beside the spinning donut
+    layout.ts               single source of truth for the vertical space budget (layoutBudget) +
+                            wrapped-row math; components never read terminal dimensions themselves
 tests/                      bun test; provider-contract.test.ts covers all backends,
                             agent-loop.test.ts covers finalize_playlist/clarify tool/maxIterations,
                             agent-tools.test.ts covers tool-spec family transforms + dispatchTool

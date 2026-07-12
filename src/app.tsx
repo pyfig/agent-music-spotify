@@ -73,6 +73,7 @@ import { copyToClipboard } from "./core/clipboard";
 import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
 import { barParts, theme, truncateLabel } from "./ui/theme";
+import { layoutBudget } from "./ui/layout";
 import { reduceEvents } from "./ui/reasoning";
 import type { ScrollBoxRenderable } from "@opentui/core";
 
@@ -1318,9 +1319,6 @@ export function App() {
   }
 
   const columnWidth = Math.min(72, Math.max(40, width - 4));
-  // Short terminals can't fit logo + input + slash menu + status bar at once.
-  // Shrink the slash menu and drop the logo so the layout never overflows.
-  const slashMaxVisible = height >= 20 ? 3 : height >= 15 ? 2 : 1;
   // Input starts vertically centered; after the first search/album request the
   // layout shifts to the usual top-aligned position with results below.
   const centered =
@@ -1347,9 +1345,19 @@ export function App() {
     playingTrackIndex >= 0 && resolved ? `${playingTrackIndex + 1}/${resolved.resolved.length}` : null;
   const nowPlaying = playingTrack ? `${playingTrack.artist} – ${playingTrack.title}` : null;
   const trackDurationMs = trackPos?.durationMs ?? playingTrack?.durationMs ?? null;
+  // All height-driven sizing (results cap, slash menu tiers, logo threshold,
+  // vertical padding) comes from the one layoutBudget helper — components get
+  // plain numbers via props and never read the terminal size themselves.
+  const budget = layoutBudget(height, {
+    awaitingConfirm,
+    nowPlaying: nowPlaying !== null && !loading && !connecting,
+    toast: toast !== null && !loading && !connecting,
+    slashOpen: slashMenuOpen,
+  });
+  const slashMaxVisible = budget.slashMaxVisible;
   // Logo only before the first prompt; frees vertical space afterwards. Also
   // hidden on very short terminals so the input and menu stay on screen.
-  const showLogo = (screen !== "main" || !hasInteracted) && height >= 12;
+  const showLogo = (screen !== "main" || !hasInteracted) && budget.logoFits;
 
   const inputCluster = (
     <>
@@ -1408,7 +1416,7 @@ export function App() {
           width: columnWidth,
           flexDirection: "column",
           flexGrow: 1,
-          paddingTop: 1,
+          paddingTop: budget.paddingTop,
           justifyContent: centered || clarifyActive ? "center" : "flex-start",
         }}
       >
@@ -1548,6 +1556,8 @@ export function App() {
                     events={events}
                     spinnerFrame={spinnerFrame}
                     reasoningScrollRef={reasoningScrollRef}
+                    maxHeight={budget.resultsMaxHeight}
+                    width={columnWidth}
                   />
                   {awaitingConfirm && (
                     <ConfirmActions
@@ -1570,13 +1580,15 @@ export function App() {
                       <span fg={theme.subtext}> {isPlaying ? "▶" : "⏸"} </span>
                       {playingPosition && <span fg={theme.muted}>{playingPosition} </span>}
                       {/* Ellipsis-truncate instead of letting flexbox hard-clip
-                          mid-word; timer cluster on the right is ~36 cols. */}
+                          mid-word; timer cluster on the right is ~36 cols. The
+                          row lives inside the columnWidth box, so budget from
+                          that — not the full terminal width. */}
                       <span fg={theme.muted}>
                         {truncateLabel(
                           nowPlaying,
                           Math.max(
                             10,
-                            width - (trackPos && trackDurationMs ? 40 : 5) - (playingPosition ? playingPosition.length + 1 : 0),
+                            columnWidth - (trackPos && trackDurationMs ? 40 : 5) - (playingPosition ? playingPosition.length + 1 : 0),
                           ),
                         )}
                       </span>
@@ -1612,6 +1624,7 @@ export function App() {
                 excludedCount={resolved?.unresolved.length}
                 volume={volume}
                 muted={mutedVolume !== null}
+                width={columnWidth}
               />
               {/* Model rides the status bar's backend label — no separate row. */}
             </>
