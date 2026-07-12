@@ -1,6 +1,7 @@
-import { createConnection, type Socket } from "node:net";
+import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { chmodSync, mkdirSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import type { MusicBackend, MusicProvider, Track } from "./types";
 
@@ -47,19 +48,45 @@ interface PlayerDeps {
   startMpv?: (socketPath: string) => Promise<MpvHandle>;
 }
 
-const socketPath = () =>
-  process.platform === "win32"
-    ? `\\\\.\\pipe\\music-agent-mpv-${process.pid}`
-    : join(tmpdir(), `music-agent-mpv-${process.pid}.sock`);
+/** Exported for tests — POSIX path must live in a 0700 per-user dir and be pid-scoped. */
+export const socketPath = () => {
+  if (process.platform === "win32") {
+    // Named-pipe namespace is already per-user/ACL'd on Windows; pid scoping
+    // keeps concurrent instances isolated.
+    return `\\\\.\\pipe\\music-agent-mpv-${process.pid}`;
+  }
+  // On POSIX the socket lives in a 0700 per-user directory so other local
+  // users can't connect to (or squat on) our mpv IPC endpoint — tmpdir()
+  // itself is world-traversable on shared machines. The explicit chmod
+  // re-tightens a pre-existing dir (mkdir mode is umask-filtered and ignored
+  // when the dir exists) and throws if another user owns the path, which is
+  // exactly when we must not use it.
+  const dir = join(tmpdir(), `music-agent-${process.getuid?.() ?? "user"}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  return join(dir, `mpv-${process.pid}.sock`);
+};
 
-async function connectWithRetry(path: string, timeoutMs: number): Promise<Socket> {
+/** Exported for tests — the spawn path uses it to wait for mpv's socket. */
+export async function connectWithRetry(path: string, timeoutMs: number): Promise<Socket> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
       return await new Promise<Socket>((resolve, reject) => {
-        const sock = createConnection(path);
+        // Handlers must be attached BEFORE connect() is initiated: Bun emits
+        // the unix-socket ENOENT error synchronously inside the connect call,
+        // so createConnection(path) would fire "error" with no listener yet —
+        // an unhandled error event that crashes the process instead of
+        // triggering a retry. Persistent error handler + destroy: a second
+        // "error" emission on a failed connect would otherwise hit an empty
+        // listener list with the same crash.
+        const sock = new Socket();
         sock.once("connect", () => resolve(sock));
-        sock.once("error", reject);
+        sock.on("error", (e) => {
+          sock.destroy();
+          reject(e);
+        });
+        sock.connect(path);
       });
     } catch (e) {
       if (Date.now() > deadline) throw new Error(`mpv IPC socket did not appear at ${path}: ${e}`);
@@ -166,7 +193,15 @@ export class PlayerController {
     if (this.mpv) return this.mpv;
     const handle = await this.startMpv(socketPath());
     handle.onEvent((ev) => {
-      if (ev.event === "end-file" && ev.reason === "eof") void this.next();
+      if (ev.event === "end-file" && ev.reason === "eof") {
+        if (this.queueIndex >= this.queueTracks.length - 1) {
+          // Final track finished — reflect the stopped state so the UI drops
+          // the ▶ marker; mpv stays idle for the next queue.
+          this.isPlayingLocal = false;
+        } else {
+          void this.next();
+        }
+      }
     });
     this.mpv = handle;
     // Apply the configured volume as soon as mpv is up so the first track
@@ -307,14 +342,18 @@ export const player = new PlayerController();
 
 /**
  * Local backends need external binaries. Fail early with install hints
- * instead of a cryptic spawn error mid-playback.
+ * instead of a cryptic spawn error mid-playback. `which` is injectable for
+ * tests (Bun.which resolves against the process's original PATH).
  */
-export function checkLocalPlaybackDeps(backend: MusicBackend): string | null {
+export function checkLocalPlaybackDeps(
+  backend: MusicBackend,
+  which: (cmd: string) => string | null = (cmd) => Bun.which(cmd),
+): string | null {
   if (backend === "spotify") return null;
-  if (!Bun.which("mpv")) {
+  if (!which("mpv")) {
     return `${backend} playback needs mpv — install it: brew install mpv (macOS) / apt install mpv (Linux)`;
   }
-  if (backend === "youtube-music" && !Bun.which("yt-dlp")) {
+  if (backend === "youtube-music" && !which("yt-dlp")) {
     return "youtube-music playback needs yt-dlp — install it: brew install yt-dlp (macOS) / apt install yt-dlp (Linux)";
   }
   return null;

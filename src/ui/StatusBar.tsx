@@ -15,6 +15,9 @@ interface StatusBarProps {
   excludedCount?: number;
   volume?: number | null;
   muted?: boolean;
+  /** Width of the containing column — the model label budget shrinks with it
+   * so the right cluster never overlaps or hard-clips the left one. */
+  width?: number;
 }
 
 const BAR_WIDTH = 10;
@@ -31,9 +34,22 @@ function volumeBarParts(volume: number): { filled: string; rest: string } {
 
 // Long provider:model labels (e.g. "opencode-go:deepseek-v4-flash") must not
 // push the backend indicator and key hints off the row — truncate with an
-// ellipsis instead of letting flexbox hard-clip mid-word. 24 leaves room for
-// the "✗ N excluded" tag on typical widths.
+// ellipsis instead of letting flexbox hard-clip mid-word. 24 is the ceiling;
+// on narrow columns the budget shrinks further so the excluded tag and the
+// volume cluster stay fully visible (see modelMax below).
 const MODEL_MAX = 24;
+const MODEL_MIN = 8;
+
+// Conservative column estimates for everything sharing the row with the model
+// label. Slightly over-reserving just makes the ellipsis kick in a character
+// early — under-reserving would hard-clip, which the layout spec forbids.
+export function modelMax(width: number | undefined, backend: string, excludedCount: number, volume: number | null, muted: boolean): number {
+  if (width === undefined) return MODEL_MAX;
+  const prefix = backend.length + 9; // " ♪ backend ✓ · "
+  const excluded = excludedCount > 0 ? String(excludedCount).length + 15 : 0; // " · ✗ N excluded"
+  const right = muted ? 11 : volume !== null ? 16 : 0; // " 🔊 ▮▮▮▯▯ 100%"
+  return Math.max(MODEL_MIN, Math.min(MODEL_MAX, width - prefix - excluded - right));
+}
 
 function progressBar(current: number, total: number): string {
   const { filled, rest } = barParts(total > 0 ? current / total : 0, BAR_WIDTH);
@@ -78,6 +94,7 @@ export function StatusBar({
   excludedCount = 0,
   volume = null,
   muted = false,
+  width,
 }: StatusBarProps) {
   // Backend + model on one line — both are environment identity, and merging
   // them frees the third footer row that model used to occupy in App.
@@ -85,7 +102,7 @@ export function StatusBar({
   // width, and flexbox would hard-clip the model mid-word — drop it then.
   const backendLabel = loading
     ? `♪ ${backend} ${authed ? "✓" : "—"}`
-    : `♪ ${backend} ${authed ? "✓" : "—"} · ${truncateLabel(model, MODEL_MAX)}`;
+    : `♪ ${backend} ${authed ? "✓" : "—"} · ${truncateLabel(model, modelMax(width, backend, excludedCount, volume, muted))}`;
   return (
     <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
       {error ? (

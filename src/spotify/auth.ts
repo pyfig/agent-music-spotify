@@ -146,6 +146,9 @@ async function refreshTokens(config: Config, refreshToken: string, existingScope
   };
 };
 
+/** How long the loopback callback listener stays up before the login fails. */
+const LOGIN_TIMEOUT_MS = 5 * 60_000;
+
 async function runLoginFlow(config: Config): Promise<Tokens> {
   const { verifier, challenge } = generatePkce();
   const state = base64url(randomBytes(16));
@@ -154,6 +157,7 @@ async function runLoginFlow(config: Config): Promise<Tokens> {
   let onCode: ((code: string) => void) | null = null;
   let onAuthError: ((err: Error) => void) | null = null;
   let resolved = false;
+  let loginTimer: ReturnType<typeof setTimeout> | undefined;
 
   const handler = (req: Request): Response | Promise<Response> => {
     const url = new URL(req.url);
@@ -174,6 +178,7 @@ async function runLoginFlow(config: Config): Promise<Tokens> {
       return new Response("stale callback, waiting for fresh one...", { status: 200 });
     }
     resolved = true;
+    clearTimeout(loginTimer);
     const s = server;
     setTimeout(() => s?.stop(), 100);
     if (error) {
@@ -205,9 +210,26 @@ async function runLoginFlow(config: Config): Promise<Tokens> {
     onAuthError = reject;
   });
 
-  await openBrowser(authUrl.toString());
-  const code = await codePromise;
-  return exchangeCode(config, code, verifier, uri);
+  // Bounded listener lifetime: if the user abandons the browser flow, tear
+  // down the loopback server instead of listening until process exit.
+  loginTimer = setTimeout(() => {
+    if (resolved) return;
+    resolved = true;
+    server.stop();
+    onAuthError?.(new Error("spotify login timed out — no callback within 5 minutes"));
+  }, LOGIN_TIMEOUT_MS);
+
+  try {
+    await openBrowser(authUrl.toString());
+    const code = await codePromise;
+    return await exchangeCode(config, code, verifier, uri);
+  } finally {
+    // Idempotent teardown for every exit path (openBrowser/exchange failures
+    // included) — the happy path and timeout already stop the server, but
+    // nothing else must be able to leave the listener or timer alive.
+    clearTimeout(loginTimer);
+    setTimeout(() => server.stop(), 100);
+  }
 }
 
 function isWSL(): boolean {
@@ -221,6 +243,23 @@ function isWSL(): boolean {
 }
 
 export async function openBrowser(url: string): Promise<void> {
+  // Defense in depth: only https URLs (and the local loopback callback) may
+  // reach the OS opener. Everything we open today is accounts.spotify.com or
+  // developer.spotify.com, but a future caller passing attacker-influenced
+  // input must not be able to launch file:/javascript:/custom-scheme handlers.
+  const parsed = (() => {
+    try {
+      return new URL(url);
+    } catch {
+      return null;
+    }
+  })();
+  const isLoopback =
+    parsed?.protocol === "http:" &&
+    (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "[::1]");
+  if (!parsed || (parsed.protocol !== "https:" && !isLoopback)) {
+    throw new Error(`refusing to open non-https URL in browser: ${url.slice(0, 80)}`);
+  }
   // Spotify OAuth URL contains `&`-joined query params, which cmd.exe treats
   // as a command separator unless the URL is quoted. The obvious fix —
   // `cmd.exe /c start "" "<url>"` with `"<url>"` as a single argv element —

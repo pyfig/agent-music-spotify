@@ -5,9 +5,10 @@ import { App } from "./app";
 import { player } from "./music/playback";
 
 // Kill mpv (and its IPC socket) however the TUI dies — normal exit, Ctrl+C,
-// or SIGTERM — so no orphan player keeps the audio device.
+// SIGTERM, or the terminal window closing (SIGHUP) — so no orphan player
+// keeps the audio device.
 process.on("exit", () => void player.stop());
-for (const sig of ["SIGINT", "SIGTERM"] as const) {
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.on(sig, () => {
     void player.stop().finally(() => process.exit(0));
   });

@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
-import { useTerminalDimensions } from "@opentui/react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import type { AgentEvent } from "../agent/types";
 import { displayArtist, theme } from "./theme";
+import { wrappedRows, MIN_RESULTS_HEIGHT } from "./layout";
 import { ReasoningTranscript } from "./ReasoningTranscript";
 
 export interface ResultLine {
@@ -33,10 +33,17 @@ interface ResultsListProps {
   /** Forwarded to ReasoningTranscript so App can scroll it while the agent is
    * still generating and the resolved list hasn't appeared yet. */
   reasoningScrollRef?: React.RefObject<ScrollBoxRenderable | null>;
+  /** Height cap from App's layoutBudget — the rows left after everything
+   * rendered below the list. The list never measures the terminal itself. */
+  maxHeight: number;
+  /** Content column width (App's columnWidth) — used to estimate wrapped row
+   * counts so the list box gets an explicit height. The scrollbox renderable
+   * stretches to any height bound it's given, so without content-row math a
+   * short list on a tall terminal opens a void before the input cluster. */
+  width: number;
 }
 
-export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayingUri, isPlaying, loading, events = [], spinnerFrame, reasoningScrollRef }: ResultsListProps) {
-  const { height } = useTerminalDimensions();
+export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayingUri, isPlaying, loading, events = [], spinnerFrame, reasoningScrollRef, maxHeight, width }: ResultsListProps) {
   const scrollRef = useRef<ScrollBoxRenderable>(null);
 
   useEffect(() => {
@@ -51,14 +58,9 @@ export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayi
     }
   }, [selectedIndex]);
 
-  // List flexes to fill space between banner and the input cluster below it.
-  // maxHeight only caps the donut: ascii title(~2) + ConfirmActions(≤8) +
-  // PromptInput(3) + StatusBar(1) + paddingTop(1) ≈ 15
-  const maxHeight = Math.max(5, height - 15);
-
   if (lines.length === 0) {
     if (loading) {
-      return <ReasoningTranscript events={events} spinnerFrame={spinnerFrame} scrollRef={reasoningScrollRef} />;
+      return <ReasoningTranscript events={events} spinnerFrame={spinnerFrame} scrollRef={reasoningScrollRef} maxHeight={maxHeight} />;
     }
     return (
       <box style={{ flexGrow: 1, alignItems: "center", justifyContent: "center" }}>
@@ -69,12 +71,24 @@ export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayi
   // Track numbers right-align in a column sized to the largest index.
   const indexWidth = String(lines.length).length;
 
+  // Explicit height = content rows capped by the budget. The scrollbox
+  // stretches to whatever bound it gets (verified: even without flexGrow it
+  // inflates its parent to maxHeight), so a short list on a tall terminal
+  // must be sized from its content or a void opens before the input cluster.
+  // -1 col for the scrollbar that appears when the list overflows.
+  const textWidth = Math.max(10, width - 3 - (indexWidth + 1) - 1);
+  const contentRows = lines.reduce((rows, line) => {
+    const label =
+      line.artist && line.title
+        ? `${displayArtist(line.artist)} — ${line.title}${line.resolved ? "" : "  not found"}`
+        : `${line.label}${line.resolved ? "" : "  not found"}`;
+    return rows + wrappedRows(label, textWidth);
+  }, 0);
+  const chromeRows = (title ? 1 : 0) + (events.length > 0 && loading ? 1 : 0);
+  const boxHeight = Math.max(MIN_RESULTS_HEIGHT, Math.min(maxHeight, contentRows + chromeRows));
+
   return (
-    // flexGrow fills to maxHeight the same way the loading-state
-    // ReasoningTranscript does, so the input cluster below always lands on
-    // the same row regardless of whether the list or the thinking log is
-    // what's currently showing above it.
-    <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minHeight: 5, maxHeight }}>
+    <box style={{ flexDirection: "column", flexShrink: 1, height: boxHeight }}>
       {/* Once generation finishes the title row below already names the
           playlist — a stale "thought · N tools" summary adds nothing. */}
       {events.length > 0 && loading && <ReasoningTranscript events={events} collapsed />}

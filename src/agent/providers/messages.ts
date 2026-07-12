@@ -9,8 +9,23 @@ import type { AgentMessage } from "../types";
  * standalone openai/ollama providers share the chat-completions shape).
  */
 
-/** OpenAI Chat Completions / Ollama: assistant.tool_calls + role:"tool" messages. */
+/** OpenAI Chat Completions: assistant.tool_calls + role:"tool" messages. */
 export function toOpenAIChatMessages(system: string, messages: AgentMessage[]): unknown[] {
+  return toChatMessages(system, messages, (args) => JSON.stringify(args));
+}
+
+/** Ollama /api/chat: same shape as Chat Completions, except `function.arguments`
+ * must be a plain object — the daemon rejects the OpenAI-style JSON string with
+ * 400 "Value looks like object, but can't find closing '}' symbol". */
+export function toOllamaChatMessages(system: string, messages: AgentMessage[]): unknown[] {
+  return toChatMessages(system, messages, (args) => args);
+}
+
+function toChatMessages(
+  system: string,
+  messages: AgentMessage[],
+  serializeArgs: (args: Record<string, unknown>) => unknown,
+): unknown[] {
   const out: unknown[] = [{ role: "system", content: system }];
   for (const m of messages) {
     if (m.role === "user") {
@@ -26,7 +41,7 @@ export function toOpenAIChatMessages(system: string, messages: AgentMessage[]): 
               tool_calls: m.toolCalls.map((tc) => ({
                 id: tc.id,
                 type: "function",
-                function: { name: tc.name, arguments: JSON.stringify(tc.args) },
+                function: { name: tc.name, arguments: serializeArgs(tc.args) },
               })),
             }
           : {}),

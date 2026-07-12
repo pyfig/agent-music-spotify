@@ -1,6 +1,6 @@
 import type { AgentMessage, AgentProvider, AgentResult, GenerateOptions, ToolCall } from "../types";
 import { toolsForOpenAIChat } from "../tools";
-import { toOpenAIChatMessages } from "./messages";
+import { toOllamaChatMessages } from "./messages";
 
 export interface OllamaConfig {
   url: string;
@@ -35,21 +35,36 @@ export class OllamaProvider implements AgentProvider {
     // Ollama tool support is opt-in via `opts.tools`; old models ignore the
     // field and emit plain JSON text — the loop's JSON fallback covers them.
     const toolsPayload = opts?.tools?.length ? toolsForOpenAIChat(opts.tools) : undefined;
-    const res = await fetch(`${this.config.url}/api/chat`, {
-      method: "POST",
-      signal,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: this.config.model,
-        format: "json",
-        stream: true,
-        // Ollama's /api/chat accepts the OpenAI chat shape (role:"tool"
-        // history included); models without native tool-role training simply
-        // read them as extra context.
-        messages: toOpenAIChatMessages(system, messages),
-        ...(toolsPayload ? { tools: toolsPayload } : {}),
-      }),
-    });
+    const request = (think: boolean) =>
+      fetch(`${this.config.url}/api/chat`, {
+        method: "POST",
+        signal,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: this.config.model,
+          format: "json",
+          stream: true,
+          // Without an explicit `think`, the daemon streams message.thinking
+          // for thinking models only on tool-less requests — as soon as
+          // `tools` is present it silently drops thinking, so the reasoning
+          // view stays blank in agent mode. Ask for it explicitly and fall
+          // back below for models that reject the flag.
+          ...(think ? { think: true } : {}),
+          // Ollama's /api/chat accepts the OpenAI chat shape (role:"tool"
+          // history included); models without native tool-role training simply
+          // read them as extra context.
+          messages: toOllamaChatMessages(system, messages),
+          // Ollama loads models with num_ctx=4096 by default; the agent-mode
+          // system prompt plus tool schemas alone exceeds that (~5k tokens) and
+          // the daemon rejects the request with exceed_context_size_error.
+          options: { num_ctx: 16384 },
+          ...(toolsPayload ? { tools: toolsPayload } : {}),
+        }),
+      });
+    let res = await request(true);
+    if (!res.ok && /does not support thinking/i.test(await res.clone().text())) {
+      res = await request(false);
+    }
     if (!res.ok || !res.body) {
       throw new Error(`ollama request failed: ${res.status} ${await res.text()}`);
     }

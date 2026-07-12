@@ -10,7 +10,7 @@ export const theme = {
   // Accents
   accent: "#1DB954", // blue — brand / selected / primary accent
   yellow: "#f9e2af", // pastel yellow — selected text in pickers
-  red: "#f38ba8", // errors / "not found"
+  red: "#f38ba8", // errors / "not found" 
   green: "#a6e3a1", // success / "yes" / currently playing
   maroon: "#eba0ac", // excluded count etc.
 
