@@ -53,7 +53,11 @@ export interface Config {
   providerChosen: boolean;
 }
 
-const CONFIG_DIR = join(homedir(), ".config", "spotify-harness-tui");
+// MUSIC_AGENT_CONFIG_DIR relocates the whole config dir — the sandbox seam
+// for tests and disposable environments (homedir() snapshots $HOME at process
+// start, so in-process HOME changes in tests don't move the config dir).
+const CONFIG_DIR =
+  process.env.MUSIC_AGENT_CONFIG_DIR ?? join(homedir(), ".config", "spotify-harness-tui");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 /**

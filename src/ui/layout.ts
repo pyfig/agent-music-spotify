@@ -14,6 +14,8 @@ export interface LayoutFlags {
   toast: boolean;
   /** Slash-command menu is open under the input. */
   slashOpen: boolean;
+  /** Compact lyrics panel is visible above the now-playing footer. */
+  lyricsPanel: boolean;
 }
 
 export interface LayoutBudget {
@@ -25,6 +27,8 @@ export interface LayoutBudget {
   slashMaxVisible: 1 | 2 | 3;
   /** Cap for the ResultsList container (includes its title row); ≥ 5. */
   resultsMaxHeight: number;
+  /** Lyric lines the full-screen view may show (viewport minus chrome); ≥ 3. */
+  lyricsScreenRows: number;
 }
 
 // Rows consumed by fixed components. Update alongside the components —
@@ -42,6 +46,31 @@ export const MIN_RESULTS_HEIGHT = 5;
 
 /** Logo drops first, below this height (existing threshold, now centralized). */
 export const LOGO_MIN_HEIGHT = 12;
+
+/** Rows consumed by the compact lyrics panel. */
+export const LYRICS_PANEL_ROWS = 5;
+
+/** Full-screen lyrics chrome: 2 border rows + 1 progress row. */
+const LYRICS_SCREEN_CHROME_ROWS = 3;
+
+/** Floor for the full-screen lyric window — same info content as the panel. */
+export const MIN_LYRICS_SCREEN_ROWS = 3;
+
+/**
+ * Visible window over a lyric sheet with the current line pinned to the
+ * vertical middle, clamped at the sheet's edges. `current === -1` (nothing
+ * sung yet) anchors the window at the top. Returns [start, end) for slice().
+ */
+export function karaokeWindow(
+  total: number,
+  current: number,
+  visible: number,
+): { start: number; end: number } {
+  if (total <= visible) return { start: 0, end: total };
+  const ideal = current < 0 ? 0 : current - Math.floor((visible - 1) / 2);
+  const start = Math.min(Math.max(ideal, 0), total - visible);
+  return { start, end: start + visible };
+}
 
 /**
  * Rows a text occupies under greedy word wrap at `width` cols — mirrors
@@ -90,10 +119,26 @@ export function layoutBudget(height: number, flags: LayoutFlags): LayoutBudget {
     (flags.toast ? TOAST_ROWS : 0) +
     (flags.slashOpen ? slashMaxVisible + SLASH_CHROME_ROWS : 0);
 
+  // Lyrics panel is lowest priority — hide it first if space is tight.
+  // Check if consuming lyrics rows drops results below the floor.
+  const lyricsConsumed = flags.lyricsPanel ? LYRICS_PANEL_ROWS : 0;
+  const baseResults = height - consumed;
+  const lyricsFits = baseResults - lyricsConsumed >= MIN_RESULTS_HEIGHT;
+
   return {
     paddingTop,
     logoFits,
     slashMaxVisible,
-    resultsMaxHeight: Math.max(MIN_RESULTS_HEIGHT, height - consumed),
+    resultsMaxHeight: Math.max(MIN_RESULTS_HEIGHT, baseResults - (lyricsFits ? lyricsConsumed : 0)),
+    // Full-screen lyrics replace the main stack; only the status bar, the
+    // now-playing footer and the box's own chrome stay around the window.
+    lyricsScreenRows: Math.max(
+      MIN_LYRICS_SCREEN_ROWS,
+      height -
+        paddingTop -
+        STATUS_ROWS -
+        (flags.nowPlaying ? NOW_PLAYING_ROWS : 0) -
+        LYRICS_SCREEN_CHROME_ROWS,
+    ),
   };
 }

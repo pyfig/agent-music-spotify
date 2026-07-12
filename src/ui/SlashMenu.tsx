@@ -17,6 +17,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/systemprompt", description: "set custom system prompt for Claude" },
   { cmd: "/like", description: "remember current track (optional comment)" },
   { cmd: "/memory", description: "show saved taste memory" },
+  { cmd: "/lyrics", description: "toggle realtime lyrics view" },
   { cmd: "/history", description: "browse past sessions & model reasoning" },
   { cmd: "/forget", description: "clear taste memory" },
   { cmd: "/quit", description: "exit music-agent" },

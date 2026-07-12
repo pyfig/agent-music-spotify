@@ -11,6 +11,7 @@ import {
 } from "./config";
 import { listOllamaModels } from "./agent/providers/ollama";
 import { useProvider, modelLabelFor } from "./hooks/useProviders";
+import { useLyrics, type TrackMeta } from "./hooks/useLyrics";
 import type { AgentEvent, AgentProvider } from "./agent/types";
 import type { ClarifyQuestion } from "./agent/parse";
 import {
@@ -73,7 +74,9 @@ import { copyToClipboard } from "./core/clipboard";
 import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
 import { barParts, theme, truncateLabel } from "./ui/theme";
-import { layoutBudget } from "./ui/layout";
+import { layoutBudget, LYRICS_PANEL_ROWS } from "./ui/layout";
+import { LyricsPanel } from "./ui/LyricsPanel";
+import { LyricsScreen } from "./ui/LyricsScreen";
 import { reduceEvents } from "./ui/reasoning";
 import type { ScrollBoxRenderable } from "@opentui/core";
 
@@ -175,6 +178,14 @@ export function App() {
   // it while the agent is still generating and the resolved-track list hasn't
   // taken over the screen (see useKeyboard below).
   const reasoningScrollRef = useRef<ScrollBoxRenderable | null>(null);
+  /** Lyrics mode: /lyrics toggles. Off by default — no network traffic while off. */
+  const [lyricsMode, setLyricsMode] = useState(false);
+  /** Full-screen lyrics overlay. */
+  const [lyricsFullScreen, setLyricsFullScreen] = useState(false);
+  /** Anchor for position interpolation: updated on each 1.5s poll. */
+  const lyricsAnchorRef = useRef<{ positionMs: number; wallClock: number; isPlaying: boolean } | null>(null);
+  /** Current track metadata for lyrics lookup — updated on each poll. */
+  const [currentTrackMeta, setCurrentTrackMeta] = useState<TrackMeta>({ uri: null, artist: "", title: "", durationMs: 0 });
   function show(msg: string) {
     setToast({ msg, ts: Date.now() });
   }
@@ -253,6 +264,17 @@ export function App() {
               ? { positionMs: state.progressMs ?? 0, durationMs: state.durationMs ?? null }
               : null,
           );
+          lyricsAnchorRef.current = state
+            ? { positionMs: state.progressMs ?? 0, wallClock: Date.now(), isPlaying: state.isPlaying ?? false }
+            : null;
+          if (state?.uri) {
+            setCurrentTrackMeta({
+              uri: state.uri,
+              artist: state.trackArtist ?? "",
+              title: state.trackTitle ?? "",
+              durationMs: state.durationMs ?? 0,
+            });
+          }
         } else {
           const state = await player.getCurrentlyPlaying();
           if (cancelled) return;
@@ -262,6 +284,17 @@ export function App() {
           setTrackPos(
             state ? { positionMs: state.positionMs, durationMs: state.durationMs } : null,
           );
+          lyricsAnchorRef.current = state
+            ? { positionMs: state.positionMs, wallClock: Date.now(), isPlaying: state.isPlaying }
+            : null;
+          if (state?.track) {
+            setCurrentTrackMeta({
+              uri: state.track.uri,
+              artist: state.track.artist ?? "",
+              title: state.track.title ?? "",
+              durationMs: state.track.durationMs ?? 0,
+            });
+          }
         }
       } catch {
         // ignore polling errors
@@ -274,6 +307,13 @@ export function App() {
       clearInterval(id);
     };
   }, [authed, loading, config]);
+
+  const { lyricsData, interpolatedPosMs, lyricsCurrentLine, clearLyricsCache } = useLyrics(
+    lyricsMode,
+    currentlyPlayingUri,
+    currentTrackMeta,
+    lyricsAnchorRef,
+  );
 
   const connectingRef = useRef(false);
 
@@ -393,6 +433,10 @@ export function App() {
         return;
       }
       if (key.name === "escape") setHistoryEntries(null);
+      return;
+    }
+    if (lyricsFullScreen) {
+      if (key.name === "escape") setLyricsFullScreen(false);
       return;
     }
     if (clarifyQuestions !== null) {
@@ -1153,6 +1197,10 @@ export function App() {
       setCurrentlyPlayingUri(null);
       setIsPlaying(false);
       setTrackPos(null);
+      setLyricsMode(false);
+      setLyricsFullScreen(false);
+      setCurrentTrackMeta({ uri: null, artist: "", title: "", durationMs: 0 });
+      clearLyricsCache();
       setSelectedIndex(0);
       // Wipe the prior-playlist seed so the next request starts fresh.
       priorPlaylistRef.current = null;
@@ -1192,6 +1240,19 @@ export function App() {
           ...(last ? ["", `Last session (${last.header}):`, ...last.lines] : []),
         ].join("\n"),
       );
+      return;
+    }
+    if (trimmed === "/lyrics") {
+      setInput("");
+      // Cycle: off → compact → fullscreen → off
+      if (lyricsFullScreen) {
+        setLyricsFullScreen(false);
+        setLyricsMode(false);
+      } else if (lyricsMode) {
+        setLyricsFullScreen(true);
+      } else {
+        setLyricsMode(true);
+      }
       return;
     }
     if (trimmed === "/history") {
@@ -1348,11 +1409,18 @@ export function App() {
   // All height-driven sizing (results cap, slash menu tiers, logo threshold,
   // vertical padding) comes from the one layoutBudget helper — components get
   // plain numbers via props and never read the terminal size themselves.
+  const lyricsResult = lyricsData !== null && lyricsData !== "none" ? lyricsData : null;
+  const hasSyncedLyrics = !!lyricsResult?.synced?.length;
+  const showCompactLyrics = !lyricsFullScreen && hasSyncedLyrics && nowPlaying !== null && !loading && !connecting;
+  // Full-screen lyrics replace ResultsList/input (else both render and the
+  // lyrics box pushes the column past the terminal); footer + StatusBar stay.
+  const fullscreenLyricsActive = lyricsFullScreen && lyricsResult !== null;
   const budget = layoutBudget(height, {
     awaitingConfirm,
     nowPlaying: nowPlaying !== null && !loading && !connecting,
     toast: toast !== null && !loading && !connecting,
     slashOpen: slashMenuOpen,
+    lyricsPanel: showCompactLyrics,
   });
   const slashMaxVisible = budget.slashMaxVisible;
   // Logo only before the first prompt; frees vertical space afterwards. Also
@@ -1497,6 +1565,14 @@ export function App() {
           />
         )}
 
+        {screen === "main" && lyricsFullScreen && lyricsResult && (
+          <LyricsScreen
+            lyrics={lyricsResult}
+            currentLine={lyricsCurrentLine}
+            interpolatedPosMs={interpolatedPosMs}
+            maxLines={budget.lyricsScreenRows}
+          />
+        )}
         {screen === "main" && historyEntries !== null && (
           <>
             <HistoryScreen
@@ -1542,8 +1618,8 @@ export function App() {
           historyEntries === null &&
           clarifyQuestions === null && (
             <>
-              {centered && inputCluster}
-              {!centered && (
+              {centered && !fullscreenLyricsActive && inputCluster}
+              {!centered && !fullscreenLyricsActive && (
                 <>
                   <ResultsList
                     title={resolved ? resolved.name : undefined}
@@ -1572,6 +1648,14 @@ export function App() {
                       bottom-anchored now that ResultsList sizes to content. */}
                   <box style={{ flexGrow: 1 }} />
                 </>
+              )}
+              {/* Same bottom-anchoring while the full-screen lyrics box
+                  (rendered above this block) replaces the results/input. */}
+              {fullscreenLyricsActive && <box style={{ flexGrow: 1 }} />}
+              {showCompactLyrics && lyricsResult && (
+                <box style={{ height: LYRICS_PANEL_ROWS, flexShrink: 0, flexDirection: "column", alignItems: "center" }}>
+                  <LyricsPanel lyrics={lyricsResult} currentLine={lyricsCurrentLine} />
+                </box>
               )}
               {nowPlaying && !loading && !connecting ? (
                 <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
@@ -1605,7 +1689,9 @@ export function App() {
                   ) : null}
                 </box>
               ) : null}
-              {toast && !loading && !connecting ? (
+              {/* Hidden in full-screen lyrics: lyricsScreenRows budgets for the
+                  footer + status bar only, an extra toast row would overflow. */}
+              {toast && !loading && !connecting && !fullscreenLyricsActive ? (
                 <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
                   <text fg={theme.green}> ✓ {toast.msg}</text>
                 </box>
