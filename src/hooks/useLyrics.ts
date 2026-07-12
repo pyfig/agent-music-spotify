@@ -37,12 +37,23 @@ export function useLyrics(
   const [interpolatedPosMs, setInterpolatedPosMs] = useState(0);
   const [lyricsCurrentLine, setLyricsCurrentLine] = useState(-1);
   const lyricsCacheRef = useRef<LyricsCache>(new LyricsCache());
+  // URI the current lyricsData was fetched for; lets the effect distinguish
+  // "still loading this track" from "holding a previous track's lyrics".
+  const loadedUriRef = useRef<string | null>(null);
 
   // Fetch lyrics when the track changes and metadata is available.
   useEffect(() => {
     if (!lyricsMode || !currentlyPlayingUri) {
+      loadedUriRef.current = null;
       setLyricsData(null);
       return;
+    }
+    if (loadedUriRef.current !== currentlyPlayingUri) {
+      // Track changed: drop the previous track's lyrics immediately so they
+      // are never shown against the new track's playback anchor. A cache hit
+      // below re-commits synchronously in the same effect run (no flicker).
+      loadedUriRef.current = null;
+      setLyricsData(null);
     }
     const meta = currentTrackMeta;
     if (meta.uri !== currentlyPlayingUri || !meta.artist || !meta.title) {
@@ -53,12 +64,16 @@ export function useLyrics(
     const cache = lyricsCacheRef.current;
     const cached = cache.getCached(currentlyPlayingUri);
     if (cached !== undefined) {
+      loadedUriRef.current = currentlyPlayingUri;
       if (cached === "none") setLyricsData("none");
       else setLyricsData(cached);
       return;
     }
     cache.fetch(currentlyPlayingUri, meta.artist, meta.title, meta.durationMs).then((result) => {
-      if (!cancelled) setLyricsData(result);
+      if (!cancelled) {
+        loadedUriRef.current = currentlyPlayingUri;
+        setLyricsData(result);
+      }
     });
     return () => {
       cancelled = true;

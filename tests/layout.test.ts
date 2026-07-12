@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { layoutBudget, wrappedRows, LOGO_MIN_HEIGHT, LYRICS_PANEL_ROWS, MIN_RESULTS_HEIGHT } from "../src/ui/layout";
+import { karaokeWindow, layoutBudget, wrappedRows, LOGO_MIN_HEIGHT, LYRICS_PANEL_ROWS, MIN_LYRICS_SCREEN_ROWS, MIN_RESULTS_HEIGHT } from "../src/ui/layout";
 
 const NONE = { awaitingConfirm: false, nowPlaying: false, toast: false, slashOpen: false, lyricsPanel: false };
 
@@ -103,6 +103,56 @@ describe("layoutBudget", () => {
 
   test("logo threshold constant matches the documented contract", () => {
     expect(LOGO_MIN_HEIGHT).toBe(12);
+  });
+
+  test("lyricsScreenRows: height minus padding, status, footer and chrome", () => {
+    // 30 - padding(1) - status(1) - nowPlaying(1) - chrome(3) = 24.
+    expect(layoutBudget(30, { ...NONE, nowPlaying: true }).lyricsScreenRows).toBe(24);
+    // 15 - 1 - 1 - 1 - 3 = 9.
+    expect(layoutBudget(15, { ...NONE, nowPlaying: true }).lyricsScreenRows).toBe(9);
+    // No footer when nothing is playing: 15 - 1 - 1 - 3 = 10.
+    expect(layoutBudget(15, NONE).lyricsScreenRows).toBe(10);
+    // 10 rows: padding drops → 10 - 0 - 1 - 1 - 3 = 5.
+    expect(layoutBudget(10, { ...NONE, nowPlaying: true }).lyricsScreenRows).toBe(5);
+    // Tiny terminal floors at the minimum.
+    expect(layoutBudget(5, { ...NONE, nowPlaying: true }).lyricsScreenRows).toBe(MIN_LYRICS_SCREEN_ROWS);
+  });
+});
+
+describe("karaokeWindow", () => {
+  test("mid-song: current line pinned to the middle of the window", () => {
+    // 50 lines, window 9, current 20 → start = 20 - 4 = 16, current at row 4.
+    expect(karaokeWindow(50, 20, 9)).toEqual({ start: 16, end: 25 });
+    // Even window 8: floor((8-1)/2) = 3 → current sits just above center.
+    expect(karaokeWindow(50, 20, 8)).toEqual({ start: 17, end: 25 });
+  });
+
+  test("advance shifts the window by exactly one line", () => {
+    const a = karaokeWindow(50, 20, 9);
+    const b = karaokeWindow(50, 21, 9);
+    expect(b.start).toBe(a.start + 1);
+    expect(b.end).toBe(a.end + 1);
+  });
+
+  test("start of sheet clamps at 0", () => {
+    expect(karaokeWindow(50, 0, 9)).toEqual({ start: 0, end: 9 });
+    expect(karaokeWindow(50, 3, 9)).toEqual({ start: 0, end: 9 });
+    // First line past the half-window starts scrolling.
+    expect(karaokeWindow(50, 5, 9)).toEqual({ start: 1, end: 10 });
+  });
+
+  test("end of sheet clamps at total", () => {
+    expect(karaokeWindow(50, 49, 9)).toEqual({ start: 41, end: 50 });
+    expect(karaokeWindow(50, 46, 9)).toEqual({ start: 41, end: 50 });
+  });
+
+  test("whole sheet fits: no scrolling at all", () => {
+    expect(karaokeWindow(5, 3, 9)).toEqual({ start: 0, end: 5 });
+    expect(karaokeWindow(9, 0, 9)).toEqual({ start: 0, end: 9 });
+  });
+
+  test("no current line yet anchors at the top", () => {
+    expect(karaokeWindow(50, -1, 9)).toEqual({ start: 0, end: 9 });
   });
 });
 

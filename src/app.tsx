@@ -75,8 +75,7 @@ import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
 import { barParts, theme, truncateLabel } from "./ui/theme";
 import { layoutBudget, LYRICS_PANEL_ROWS } from "./ui/layout";
-import type { LyricsResult } from "./lyrics/client";
-import { currentLineIndex } from "./lyrics/lrc";
+import { LyricsPanel } from "./ui/LyricsPanel";
 import { LyricsScreen } from "./ui/LyricsScreen";
 import { reduceEvents } from "./ui/reasoning";
 import type { ScrollBoxRenderable } from "@opentui/core";
@@ -1413,6 +1412,9 @@ export function App() {
   const lyricsResult = lyricsData !== null && lyricsData !== "none" ? lyricsData : null;
   const hasSyncedLyrics = !!lyricsResult?.synced?.length;
   const showCompactLyrics = !lyricsFullScreen && hasSyncedLyrics && nowPlaying !== null && !loading && !connecting;
+  // Full-screen lyrics replace ResultsList/input (else both render and the
+  // lyrics box pushes the column past the terminal); footer + StatusBar stay.
+  const fullscreenLyricsActive = lyricsFullScreen && lyricsResult !== null;
   const budget = layoutBudget(height, {
     awaitingConfirm,
     nowPlaying: nowPlaying !== null && !loading && !connecting,
@@ -1568,6 +1570,7 @@ export function App() {
             lyrics={lyricsResult}
             currentLine={lyricsCurrentLine}
             interpolatedPosMs={interpolatedPosMs}
+            maxLines={budget.lyricsScreenRows}
           />
         )}
         {screen === "main" && historyEntries !== null && (
@@ -1615,8 +1618,8 @@ export function App() {
           historyEntries === null &&
           clarifyQuestions === null && (
             <>
-              {centered && inputCluster}
-              {!centered && (
+              {centered && !fullscreenLyricsActive && inputCluster}
+              {!centered && !fullscreenLyricsActive && (
                 <>
                   <ResultsList
                     title={resolved ? resolved.name : undefined}
@@ -1646,22 +1649,12 @@ export function App() {
                   <box style={{ flexGrow: 1 }} />
                 </>
               )}
+              {/* Same bottom-anchoring while the full-screen lyrics box
+                  (rendered above this block) replaces the results/input. */}
+              {fullscreenLyricsActive && <box style={{ flexGrow: 1 }} />}
               {showCompactLyrics && lyricsResult && (
-                <box style={{ height: LYRICS_PANEL_ROWS, flexShrink: 0, flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
-                  {(() => {
-                    const lines = lyricsResult.synced ?? [];
-                    const idx = lyricsCurrentLine;
-                    const prev = idx > 0 && idx - 1 < lines.length ? lines[idx - 1] : null;
-                    const curr = idx >= 0 && idx < lines.length ? lines[idx] : null;
-                    const next = idx >= 0 && idx + 1 < lines.length ? lines[idx + 1] : null;
-                    return (
-                      <>
-                        <text fg={prev ? theme.muted : theme.surface1}>{prev ? prev.text : "—"}</text>
-                        <text fg={curr ? theme.accent : theme.surface1}>{curr ? `▸ ${curr.text}` : "—"}</text>
-                        <text fg={next ? theme.subtext : theme.surface1}>{next ? next.text : "—"}</text>
-                      </>
-                    );
-                  })()}
+                <box style={{ height: LYRICS_PANEL_ROWS, flexShrink: 0, flexDirection: "column", alignItems: "center" }}>
+                  <LyricsPanel lyrics={lyricsResult} currentLine={lyricsCurrentLine} />
                 </box>
               )}
               {nowPlaying && !loading && !connecting ? (
@@ -1696,7 +1689,9 @@ export function App() {
                   ) : null}
                 </box>
               ) : null}
-              {toast && !loading && !connecting ? (
+              {/* Hidden in full-screen lyrics: lyricsScreenRows budgets for the
+                  footer + status bar only, an extra toast row would overflow. */}
+              {toast && !loading && !connecting && !fullscreenLyricsActive ? (
                 <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
                   <text fg={theme.green}> ✓ {toast.msg}</text>
                 </box>

@@ -146,6 +146,82 @@ describe("useLyrics", () => {
     expect(fetchMock).toHaveBeenCalledTimes(0);
   });
 
+  test("clears stale lyrics when URI changes but metadata still lags", async () => {
+    const metaA: TrackMeta = { uri: "spotify:track:A", artist: "Artist", title: "Song A", durationMs: 1000 };
+
+    const { result, rerender } = renderHook(
+      ({ lyricsMode, uri, meta }) => useTestHook(lyricsMode, uri, meta),
+      {
+        initialProps: {
+          lyricsMode: true,
+          uri: "spotify:track:A" as string | null,
+          meta: metaA,
+        },
+      },
+    );
+
+    await waitFor(() => expect(result.current.lyricsData).toEqual(SAMPLE_LYRICS));
+
+    // Poll reports track B's URI, but metadata still describes track A.
+    rerender({ lyricsMode: true, uri: "spotify:track:B", meta: metaA });
+
+    // Track A's lyrics must not linger while track B loads.
+    expect(result.current.lyricsData).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("clears old lyrics during in-flight fetch and shows new track's lyrics after resolution", async () => {
+    const metaA: TrackMeta = { uri: "spotify:track:A", artist: "Artist", title: "Song A", durationMs: 1000 };
+    const metaB: TrackMeta = { uri: "spotify:track:B", artist: "Artist", title: "Song B", durationMs: 1000 };
+
+    const { result, rerender } = renderHook(
+      ({ lyricsMode, uri, meta }) => useTestHook(lyricsMode, uri, meta),
+      {
+        initialProps: {
+          lyricsMode: true,
+          uri: "spotify:track:A" as string | null,
+          meta: metaA,
+        },
+      },
+    );
+
+    await waitFor(() => expect(result.current.lyricsData).toEqual(SAMPLE_LYRICS));
+
+    // Track changes; new fetch is in flight — old lyrics cleared immediately.
+    rerender({ lyricsMode: true, uri: "spotify:track:B", meta: metaB });
+    expect(result.current.lyricsData).toBeNull();
+
+    await waitFor(() => expect(result.current.lyricsData).toEqual(SAMPLE_LYRICS));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("returning to a cached track shows its lyrics synchronously without refetch", async () => {
+    const metaA: TrackMeta = { uri: "spotify:track:A", artist: "Artist", title: "Song A", durationMs: 1000 };
+    const metaB: TrackMeta = { uri: "spotify:track:B", artist: "Artist", title: "Song B", durationMs: 1000 };
+
+    const { result, rerender } = renderHook(
+      ({ lyricsMode, uri, meta }) => useTestHook(lyricsMode, uri, meta),
+      {
+        initialProps: {
+          lyricsMode: true,
+          uri: "spotify:track:A" as string | null,
+          meta: metaA,
+        },
+      },
+    );
+
+    await waitFor(() => expect(result.current.lyricsData).toEqual(SAMPLE_LYRICS));
+
+    rerender({ lyricsMode: true, uri: "spotify:track:B", meta: metaB });
+    await waitFor(() => expect(result.current.lyricsData).toEqual(SAMPLE_LYRICS));
+
+    // Back to track A — cached, so lyrics appear synchronously after the
+    // effect flush with no additional network request.
+    rerender({ lyricsMode: true, uri: "spotify:track:A", meta: metaA });
+    expect(result.current.lyricsData).toEqual(SAMPLE_LYRICS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   test("does not fetch when no track is playing", async () => {
     const meta: TrackMeta = { uri: null, artist: "", title: "", durationMs: 0 };
     const { result } = renderHook(({ lyricsMode, uri, meta }) =>
