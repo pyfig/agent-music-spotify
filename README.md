@@ -2,8 +2,16 @@
 
 Terminal UI (Bun + [@opentui/react](https://github.com/anomalyco/opentui)) that turns a mood or request into a Spotify playlist: an AI agent picks the tracks, the real Spotify Web API resolves and plays them — all without leaving the terminal.
 
-<img width="1672" height="1031" alt="image" src="https://github.com/user-attachments/assets/6595e6c6-a010-409e-bd6a-cd9b2e8f82f8" />
+<img width="1672" height="1031" alt="amusic TUI: playlist generation with reasoning transcript" src="https://github.com/user-attachments/assets/6595e6c6-a010-409e-bd6a-cd9b2e8f82f8" />
 
+- **Mood → playlist:** type `late night driving synthwave`, answer one clarifying question, get a real playlist on your Spotify account.
+- **Agentic track picking:** the model drives a multi-turn tool loop (`searchTrack`, `searchArtist`, `getArtistTopTracks`, `clarify`, `finalize_playlist`) against the live music catalog instead of hallucinating track names.
+- **Three music backends:** Spotify (remote playlists + Spotify Connect playback), SoundCloud and YouTube Music (local playback via mpv). Switch with **Ctrl+B**.
+- **Six agent providers:** Claude CLI, Ollama, OpenAI, OpenRouter, opencode Zen/Go. Cycle with **Ctrl+P**, configure in-app with `/model`.
+- **Taste memory & history:** `/like`d tracks and past sessions bias future playlists; `/history` replays any earlier session against the current backend.
+- **Zero-setup Spotify auth:** built-in client ID + PKCE flow, browser consent on first run, tokens cached and auto-refreshed.
+
+**Contents:** [Install](#install) · [Spotify setup](#spotify-setup) · [Usage](#usage) · [Backends](#multiple-backends) · [History](#session-history) · [Taste memory](#taste-memory) · [Agent loop](#agent-loop) · [Config](#config) · [Run from source](#run-from-source)
 
 ## Install
 
@@ -22,7 +30,7 @@ git clone https://github.com/pyfig/agent-music-spotify.git && cd agent-music-spo
 amusic
 ```
 
-The installer ensures Bun is present, installs dependencies, and links an `amusic` command into `~/.local/bin` (the curl variant keeps the repo in `~/.local/share/amusic`).
+The installer ensures Bun is present, installs dependencies, and links an `amusic` command into `~/.local/bin`. The curl variant keeps the repo in `~/.local/share/amusic` pinned to the latest release tag and auto-updates to newer tags (checked at most once a day; skipped if you have local changes or are offline).
 
 ## Spotify setup
 
@@ -86,7 +94,7 @@ Generated sessions and `/like`d tracks accumulate in `.commandcode/taste/taste.m
 
 ## Agent loop
 
-API providers (`openai`, `opencode`, `ollama` with a tool-capable model) drive a multi-turn agent loop instead of a single prompt→JSON shot. The model gets tools (`searchTrack`, `searchArtist`, `getArtistTopTracks`, `clarify`, `finalize_playlist`), investigates the active music backend, asks at most one clarifying question through the existing ClarifyPrompt UI, then commits the playlist via the `finalize_playlist` tool. The loop is bounded — at most 8 iterations, then it errors. A duplicate-call guard keeps weaker models from looping on the same query: repeating a tool call with identical arguments replays the cached result with a warning instead of re-dispatching, and an always-on `anti-loop` prompt skill tells the model to reuse prior results and finalize when stuck. Models that silently drop the tools (older Ollama backends) fall through to the JSON-in-text fallback, so legacy flow still works.
+API providers (`openai`, `openrouter`, `opencode`, `ollama` with a tool-capable model) drive a multi-turn agent loop instead of a single prompt→JSON shot. The model gets tools (`searchTrack`, `searchArtist`, `getArtistTopTracks`, `clarify`, `finalize_playlist`), investigates the active music backend, asks at most one clarifying question through the existing ClarifyPrompt UI, then commits the playlist via the `finalize_playlist` tool. The loop is bounded — at most 8 iterations, then it errors. A duplicate-call guard keeps weaker models from looping on the same query: repeating a tool call with identical arguments replays the cached result with a warning instead of re-dispatching, and an always-on `anti-loop` prompt skill tells the model to reuse prior results and finalize when stuck. Models that silently drop the tools (older Ollama backends) fall through to the JSON-in-text fallback, so legacy flow still works.
 
 While the agent thinks, a `ReasoningTranscript` panel takes over the list area as a chat-style log of reasoning/tool lines, pinned to the tail via `stickyScroll` — it disengages when you scroll up with arrows to read earlier reasoning and re-engages once you reach the bottom again. The status bar shows `⠋ thinking n=… · elapsed·s · vol` on the right while the backend identity (`♪ spotify ✓`) stays on the left.
 
@@ -116,6 +124,9 @@ Optional overrides via env vars or `~/.config/spotify-harness-tui/config.json` (
 | `OPENAI_SUBS_TOKEN` | `openaiSubsToken` | `""` | ChatGPT subscription bearer |
 | `OPENAI_BASE_URL` | `openaiBaseUrl` | `https://api.openai.com/v1` | chat completions base |
 | `OPENAI_MODEL` | `openaiModel` | `gpt-5` | OpenAI model id |
+| `OPENROUTER_API_KEY` | `openrouterApiKey` | `""` | OpenRouter API key |
+| `OPENROUTER_BASE_URL` | `openrouterBaseUrl` | `https://openrouter.ai/api/v1` | OpenRouter base URL |
+| `OPENROUTER_MODEL` | `openrouterModel` | `openrouter/auto` | vendor-prefixed model id (`openrouter/auto` routes automatically) |
 | `VOLUME` | `volume` | `70` | playback volume 0-100 |
 
 Minimal `config.json`:
@@ -136,6 +147,7 @@ Cycle with **Ctrl+P** or `/model` (each provider's config page there edits its k
 - **ollama**: requires a running Ollama daemon (`ollama serve`) with a pulled model.
 - **opencode: go / opencode: zen**: opencode hosted models — separate paid tiers, each with its own key + base URL.
 - **openai**: OpenAI Chat Completions, API key (`OPENAI_API_KEY`) or ChatGPT subscription token (`OPENAI_SUBS_TOKEN`).
+- **openrouter**: one API key (`OPENROUTER_API_KEY`) for any vendor-prefixed model; the default `openrouter/auto` picks a model per request.
 
 ## Run from source
 
@@ -156,4 +168,4 @@ bun test
 
 ## Not yet implemented
 
-OpenRouter agent provider, album art rendering, playlist editing after creation. Live playback progress is now shipped — the now-playing row renders `0:15 ━━━━━━━━━━━─ 3:34`.
+Album art rendering, playlist editing after creation.

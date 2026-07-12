@@ -1,5 +1,5 @@
 import type { Progress } from "../core/generate-playlist";
-import { barParts, SPINNER, theme, truncateLabel } from "./theme";
+import { barParts, SPINNER, THINKING_SPINNER, theme, truncateLabel } from "./theme";
 
 interface StatusBarProps {
   model: string;
@@ -49,6 +49,14 @@ export function modelMax(width: number | undefined, backend: string, excludedCou
   const excluded = excludedCount > 0 ? String(excludedCount).length + 15 : 0; // " · ✗ N excluded"
   const right = muted ? 11 : volume !== null ? 16 : 0; // " 🔊 ▮▮▮▯▯ 100%"
   return Math.max(MODEL_MIN, Math.min(MODEL_MAX, width - prefix - excluded - right));
+}
+
+// Thinking and clarifying are both LLM reasoning — they get the musical
+// frames so the reasoning phase reads differently from resolve/create
+// progress. Exported for tests.
+export function spinnerGlyph(phase: Progress["phase"], frame: number): string {
+  const frames = phase === "thinking" || phase === "clarifying" ? THINKING_SPINNER : SPINNER;
+  return frames[frame % frames.length]!;
 }
 
 function progressBar(current: number, total: number): string {
@@ -126,7 +134,7 @@ export function StatusBar({
           {/* Right: spinner + thinking/vol — keeps its width so it never clips. */}
           <box style={{ flexDirection: "row", flexShrink: 0, flexGrow: 1, justifyContent: "flex-end" }}>
             <text fg={theme.accent}>
-              {SPINNER[spinnerFrame % SPINNER.length]} {progressLabel(progress, tokenCount)}
+              {spinnerGlyph(progress.phase, spinnerFrame)} {progressLabel(progress, tokenCount)}
               {" · "}
               {elapsed}s
             </text>

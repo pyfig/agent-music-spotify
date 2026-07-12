@@ -135,8 +135,10 @@ export async function loadConfig(): Promise<Config> {
     configDir: CONFIG_DIR,
     musicBackend:
       asMusicBackend(process.env.MUSIC_BACKEND) ??
+      // youtube-music by default: works out of the box (mpv + yt-dlp, no
+      // account), unlike spotify which needs a client ID + OAuth login first.
       asMusicBackend(fileConfig.musicBackend) ??
-      "spotify",
+      "youtube-music",
     spotifyClientId: isValidClientId(process.env.SPOTIFY_CLIENT_ID)
       ? process.env.SPOTIFY_CLIENT_ID
       : isValidClientId(fileConfig.spotifyClientId)
