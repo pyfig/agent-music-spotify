@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { layoutBudget, wrappedRows, LOGO_MIN_HEIGHT, MIN_RESULTS_HEIGHT } from "../src/ui/layout";
+import { layoutBudget, wrappedRows, LOGO_MIN_HEIGHT, LYRICS_PANEL_ROWS, MIN_RESULTS_HEIGHT } from "../src/ui/layout";
 
-const NONE = { awaitingConfirm: false, nowPlaying: false, toast: false, slashOpen: false };
+const NONE = { awaitingConfirm: false, nowPlaying: false, toast: false, slashOpen: false, lyricsPanel: false };
 
 describe("layoutBudget", () => {
   test("17-row terminal, plain list: list gets all rows minus input+status+padding", () => {
@@ -66,8 +66,39 @@ describe("layoutBudget", () => {
   });
 
   test("everything at once on a small terminal still respects the floor", () => {
-    const b = layoutBudget(17, { awaitingConfirm: true, nowPlaying: true, toast: true, slashOpen: true });
+    const b = layoutBudget(17, { awaitingConfirm: true, nowPlaying: true, toast: true, slashOpen: true, lyricsPanel: false });
     expect(b.resultsMaxHeight).toBe(MIN_RESULTS_HEIGHT);
+  });
+
+  test("lyrics panel consumes 3 rows when flagged and height permits", () => {
+    const without = layoutBudget(24, { ...NONE, nowPlaying: true });
+    const withLyrics = layoutBudget(24, { ...NONE, nowPlaying: true, lyricsPanel: true });
+    expect(withLyrics.resultsMaxHeight).toBe(without.resultsMaxHeight - LYRICS_PANEL_ROWS);
+  });
+
+  test("lyrics panel hides first on short terminals (before logo)", () => {
+    // At height 14: consumed = padding(1) + input(3) + status(1) + nowPlaying(1) = 6.
+    // baseResults = 14 - 6 = 8. With lyrics: 8 - 3 = 5 ≥ 5 → fits, floor.
+    const fits = layoutBudget(14, { ...NONE, nowPlaying: true, lyricsPanel: true });
+    expect(fits.resultsMaxHeight).toBe(5);
+    expect(fits.logoFits).toBe(true);
+
+    // At height 12: consumed = 6. baseResults = 12 - 6 = 6. With lyrics: 6 - 3 = 3 < 5 → hide.
+    const hidden = layoutBudget(12, { ...NONE, nowPlaying: true, lyricsPanel: true });
+    expect(hidden.resultsMaxHeight).toBe(6);
+    expect(hidden.logoFits).toBe(true); // logo still fits even though lyrics is hidden
+  });
+
+  test("lyrics panel hidden cannot force results below floor", () => {
+    // At height 11: logo doesn't fit (padding = 0). consumed = 0 + 3 + 1 + 1 = 5.
+    // baseResults = 11 - 5 = 6. With lyrics: 6 - 3 = 3 < 5 → hide lyrics.
+    const b = layoutBudget(11, { ...NONE, nowPlaying: true, lyricsPanel: true });
+    expect(b.resultsMaxHeight).toBe(6);
+    expect(b.logoFits).toBe(false);
+  });
+
+  test("lyrics panel row constant matches contract", () => {
+    expect(LYRICS_PANEL_ROWS).toBe(3);
   });
 
   test("logo threshold constant matches the documented contract", () => {

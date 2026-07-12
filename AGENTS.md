@@ -129,7 +129,8 @@ These `.claude/skills/` skills hold the load-bearing detail — they're gitignor
 
 ## Project environment variables
 
-- `MUSIC_BACKEND` — `spotify` (default) | `soundcloud` | `youtube-music`.
+- `MUSIC_BACKEND` — `youtube-music` (default — plays out of the box, no account) | `spotify` | `soundcloud`.
+- `MUSIC_AGENT_CONFIG_DIR` — relocate the whole config dir (default `~/.config/spotify-harness-tui`); the sandbox seam for tests/disposable envs (`homedir()` snapshots `$HOME` at process start, so in-process HOME changes don't move it).
 - `SPOTIFY_CLIENT_ID` — Spotify app client ID (32 hex); invalid value silently ignored, falls back to built-in `DEFAULT_CLIENT_ID`.
 - `SOUNDCLOUD_CLIENT_ID` — api-v2 client_id; optional — auto-scraped from soundcloud.com and cached in config when unset.
 - `YTMUSIC_COOKIE` — reserved for future YouTube Music library access; search + playback are anonymous.

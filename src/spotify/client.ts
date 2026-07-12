@@ -254,6 +254,8 @@ export class SpotifyClient implements MusicProvider {
     volume?: number | null;
     progressMs?: number | null;
     durationMs?: number | null;
+    trackTitle?: string;
+    trackArtist?: string;
   } | null> {
     const res = await fetch(`${API_BASE}/me/player`, {
       headers: { authorization: `Bearer ${this.accessToken}` },
@@ -267,6 +269,8 @@ export class SpotifyClient implements MusicProvider {
       volume: typeof data?.device?.volume_percent === "number" ? data.device.volume_percent : null,
       progressMs: typeof data?.progress_ms === "number" ? data.progress_ms : null,
       durationMs: typeof data?.item?.duration_ms === "number" ? data.item.duration_ms : null,
+      trackTitle: data?.item?.name ?? undefined,
+      trackArtist: data?.item?.artists?.[0]?.name ?? undefined,
     };
   }
 

@@ -104,7 +104,7 @@ Optional overrides via env vars or `~/.config/spotify-harness-tui/config.json` (
 
 | Env var | Config key | Default | Purpose |
 |---|---|---|---|
-| `MUSIC_BACKEND` | `musicBackend` | `spotify` | `spotify` · `soundcloud` · `youtube-music` |
+| `MUSIC_BACKEND` | `musicBackend` | `youtube-music` | `spotify` · `soundcloud` · `youtube-music` |
 | `SPOTIFY_CLIENT_ID` | `spotifyClientId` | built-in shared | Spotify app client ID (32 hex) |
 | `SOUNDCLOUD_CLIENT_ID` | `soundcloudClientId` | auto-scraped | SoundCloud api-v2 client_id |
 | `DEFAULT_PROVIDER` | `defaultProvider` | `claude-cli` | agent provider (see below) |

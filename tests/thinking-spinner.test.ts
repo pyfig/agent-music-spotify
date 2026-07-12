@@ -20,7 +20,7 @@ describe("spinnerGlyph phase selection", () => {
   test("thinking and clarifying use the musical frames", () => {
     for (const phase of ["thinking", "clarifying"] as const) {
       for (let frame = 0; frame < THINKING_SPINNER.length * 2; frame++) {
-        expect(THINKING_SPINNER).toContain(spinnerGlyph(phase, frame));
+        expect(THINKING_SPINNER as readonly string[]).toContain(spinnerGlyph(phase, frame));
       }
     }
   });
@@ -28,7 +28,7 @@ describe("spinnerGlyph phase selection", () => {
   test("resolving/tool/creating keep the braille frames", () => {
     for (const phase of ["resolving", "tool", "creating"] as const) {
       for (let frame = 0; frame < SPINNER.length; frame++) {
-        expect(SPINNER).toContain(spinnerGlyph(phase, frame));
+        expect(SPINNER as readonly string[]).toContain(spinnerGlyph(phase, frame));
       }
     }
   });

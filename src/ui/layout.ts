@@ -14,6 +14,8 @@ export interface LayoutFlags {
   toast: boolean;
   /** Slash-command menu is open under the input. */
   slashOpen: boolean;
+  /** Compact lyrics panel is visible above the now-playing footer. */
+  lyricsPanel: boolean;
 }
 
 export interface LayoutBudget {
@@ -42,6 +44,9 @@ export const MIN_RESULTS_HEIGHT = 5;
 
 /** Logo drops first, below this height (existing threshold, now centralized). */
 export const LOGO_MIN_HEIGHT = 12;
+
+/** Rows consumed by the compact lyrics panel. */
+export const LYRICS_PANEL_ROWS = 3;
 
 /**
  * Rows a text occupies under greedy word wrap at `width` cols — mirrors
@@ -90,10 +95,16 @@ export function layoutBudget(height: number, flags: LayoutFlags): LayoutBudget {
     (flags.toast ? TOAST_ROWS : 0) +
     (flags.slashOpen ? slashMaxVisible + SLASH_CHROME_ROWS : 0);
 
+  // Lyrics panel is lowest priority — hide it first if space is tight.
+  // Check if consuming lyrics rows drops results below the floor.
+  const lyricsConsumed = flags.lyricsPanel ? LYRICS_PANEL_ROWS : 0;
+  const baseResults = height - consumed;
+  const lyricsFits = baseResults - lyricsConsumed >= MIN_RESULTS_HEIGHT;
+
   return {
     paddingTop,
     logoFits,
     slashMaxVisible,
-    resultsMaxHeight: Math.max(MIN_RESULTS_HEIGHT, height - consumed),
+    resultsMaxHeight: Math.max(MIN_RESULTS_HEIGHT, baseResults - (lyricsFits ? lyricsConsumed : 0)),
   };
 }
