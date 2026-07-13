@@ -1,54 +1,17 @@
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  DEFAULT_CLIENT_ID,
-  isConfigured,
-  isValidClientId,
-  loadConfig,
-  saveConfig,
-  type Config,
-  type FileConfig,
-} from "./config";
+import { DEFAULT_CLIENT_ID, isValidClientId, type Config } from "./config";
 import { listOllamaModels } from "./agent/providers/ollama";
 import { useProvider, modelLabelFor } from "./hooks/useProviders";
 import { useLyrics, type TrackMeta } from "./hooks/useLyrics";
-import type { AgentEvent, AgentProvider } from "./agent/types";
-import type { ClarifyQuestion } from "./agent/parse";
-import {
-  generateRandomPlaylistUser,
-  type ClarifyAnswer,
-} from "./agent/prompts";
-
-import {
-  forceFreshLogin,
-  getAccessToken,
-  isAuthenticated,
-  openBrowser,
-} from "./spotify/auth";
+import type { AgentProvider } from "./agent/types";
+import { generateRandomPlaylistUser } from "./agent/prompts";
+import { getAccessToken, openBrowser } from "./spotify/auth";
 import { SpotifyClient } from "./spotify/client";
 import { createMusicProvider } from "./music/factory";
 import { checkLocalPlaybackDeps, player } from "./music/playback";
-import {
-  addLine,
-  appendSession,
-  emptyTaste,
-  loadTaste,
-  needsRotation,
-  rotate,
-  ROTATE_SYSTEM,
-  saveTaste,
-  tasteForClarify,
-  tastePromptPrefix,
-} from "./core/taste";
-import type { MusicBackend, RemotePlaylist } from "./music/types";
+import type { MusicBackend } from "./music/types";
 import { MusicBackendPicker } from "./ui/MusicBackendPicker";
-import {
-  resolvePlaylist,
-  resolveTracks,
-  commitPlaylist,
-  type ResolvedPlaylist,
-  type Progress,
-} from "./core/generate-playlist";
 import { PromptInput } from "./ui/PromptInput";
 import { ResultsList, type ResultLine } from "./ui/ResultsList";
 import { StatusBar } from "./ui/StatusBar";
@@ -61,21 +24,18 @@ import { ClarifyPrompt } from "./ui/ClarifyPrompt";
 import { ClientIdPrompt } from "./ui/ClientIdPrompt";
 import { SystemPromptPrompt } from "./ui/SystemPromptPrompt";
 import { HistoryScreen } from "./ui/HistoryScreen";
-import {
-  appendHistory,
-  HISTORY_TITLE_SYSTEM,
-  historyEntryToText,
-  historyReasoningToText,
-  loadHistory,
-  updateHistoryTitle,
-  type HistoryEntry,
-} from "./core/history";
+import { historyEntryToText, historyReasoningToText } from "./core/history";
 import { copyToClipboard } from "./core/clipboard";
-import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
+import { ConfirmActions } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
 import { theme, truncateLabel } from "./ui/theme";
 import { fmtTime, trackBar } from "./ui/format";
 import { useToast } from "./hooks/useToast";
+import { useAppConfig } from "./hooks/useAppConfig";
+import { useAuthFlow } from "./hooks/useAuthFlow";
+import { useGeneration } from "./hooks/useGeneration";
+import { useTasteActions } from "./hooks/useTasteActions";
+import { useHistoryScreen } from "./hooks/useHistoryScreen";
 import {
   blocksPromptFocus,
   replacesMainRegion,
@@ -84,50 +44,20 @@ import {
 import { layoutBudget, LYRICS_PANEL_ROWS } from "./ui/layout";
 import { LyricsPanel } from "./ui/LyricsPanel";
 import { LyricsScreen } from "./ui/LyricsScreen";
-import { reduceEvents } from "./ui/reasoning";
 import type { ScrollBoxRenderable } from "@opentui/core";
-
-type Screen = "loading" | "wizard" | "main";
 
 export function App() {
   const { width, height } = useTerminalDimensions();
-  const [config, setConfig] = useState<Config | null>(null);
-  const [screen, setScreen] = useState<Screen>("loading");
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   /** The single active modal overlay — opening one structurally replaces any
    * other (see src/app/overlay.ts). */
   const [overlay, setOverlay] = useState<OverlayState>(null);
   const [input, setInput] = useState("");
-  const [authed, setAuthed] = useState(false);
-  const authedRef = useRef(false);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
-  const [selectedIndex, setSelectedIndex] = useState(0);
-  const [resolved, setResolved] = useState<ResolvedPlaylist | null>(null);
-  const [awaitingConfirm, setAwaitingConfirm] = useState(false);
-  const [committedPlaylist, setCommittedPlaylist] =
-    useState<RemotePlaylist | null>(null);
-  const [clarifyQuestions, setClarifyQuestions] = useState<
-    ClarifyQuestion[] | null
-  >(null);
-  const [clarifyStepIndex, setClarifyStepIndex] = useState(0);
-  const [clarifyAnswers, setClarifyAnswers] = useState<ClarifyAnswer[]>([]);
-  const [clarifyCustomMode, setClarifyCustomMode] = useState(false);
-  const [clarifyCustomText, setClarifyCustomText] = useState("");
-  const [pendingBasePrompt, setPendingBasePrompt] = useState<string | null>(
-    null,
-  );
   const [slashIndex, setSlashIndex] = useState(0);
   const [hasInteracted, setHasInteracted] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
-  const [progress, setProgress] = useState<Progress | null>(null);
-  const [startTime, setStartTime] = useState<number | null>(null);
-  const [spinnerFrame, setSpinnerFrame] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
-  const [escArmed, setEscArmed] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-  const escTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { toast, show } = useToast();
+
+  // --- playback state (moves into usePlayback in a later phase) ---
   const [currentlyPlayingUri, setCurrentlyPlayingUri] = useState<string | null>(
     null,
   );
@@ -137,21 +67,7 @@ export function App() {
   const [volume, setVolume] = useState<number | null>(null);
   // Mute state: mutedVolume holds the pre-mute level so a second M restores it.
   const [mutedVolume, setMutedVolume] = useState<number | null>(null);
-  /** Ordered reasoning/tool transcript, rendered as a chat-style thinking log. */
-  const [events, setEvents] = useState<AgentEvent[]>([]);
-  // Mirror of `events` readable from runResolve's closure (state var is stale
-  // there); used to persist the transcript into session history.
-  const eventsRef = useRef<AgentEvent[]>([]);
-  /** /history overlay: non-null = open, newest-first session list. */
-  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[] | null>(null);
-  /** Picked session whose stored transcript is shown (detail level). */
-  const [historyDetail, setHistoryDetail] = useState<HistoryEntry | null>(null);
-  const historyScrollRef = useRef<ScrollBoxRenderable | null>(null);
-  /** Deferred resolver for the in-loop `clarify` tool: when the agent calls
-   * clarify, the loop awaits this promise; we resolve it from `advanceClarify`
-   * once the user picks an option / submits a custom answer. */
-  const clarifyResolverRef = useRef<((answer: string) => void) | null>(null);
-  const { toast, show } = useToast();
+
   // Live handle on the reasoning-transcript scrollbox so Up/Down can scroll
   // it while the agent is still generating and the resolved-track list hasn't
   // taken over the screen (see useKeyboard below).
@@ -164,41 +80,37 @@ export function App() {
   const lyricsAnchorRef = useRef<{ positionMs: number; wallClock: number; isPlaying: boolean } | null>(null);
   /** Current track metadata for lyrics lookup — updated on each poll. */
   const [currentTrackMeta, setCurrentTrackMeta] = useState<TrackMeta>({ uri: null, artist: "", title: "", durationMs: 0 });
-  // Taste sessions group by generation; /like lands in the latest one.
-  const sessionHeaderRef = useRef<string>(new Date().toISOString().slice(0, 16));
-  // Soft seed context: the previous session's resolved playlist (as
-  // "artist – title" lines) is fed into the next generation's user prompt.
-  // Lives in memory only — /clear nulls it; restart loses it (consistent
-  // with `resolved`/`committedPlaylist`/`events`).
-  const priorPlaylistRef = useRef<string[] | null>(null);
 
-  function disarmEsc() {
-    if (escTimerRef.current) clearTimeout(escTimerRef.current);
-    escTimerRef.current = null;
-    setEscArmed(false);
-  }
+  const {
+    authed,
+    authedRef,
+    markAuthed,
+    connecting,
+    pendingPrompt,
+    setPendingPrompt,
+    login,
+  } = useAuthFlow({
+    setError,
+    show,
+    openClientIdPrompt: () => setOverlay({ kind: "client-id", text: "" }),
+  });
 
-  // One timer drives both spinner and elapsed-seconds while generating.
-  useEffect(() => {
-    if (!loading || startTime === null) return;
-    const id = setInterval(() => {
-      setSpinnerFrame((f) => (f + 1) % 10);
-      setElapsed(Math.floor((Date.now() - startTime) / 1000));
-    }, 80);
-    return () => clearInterval(id);
-  }, [loading, startTime]);
-
-  useEffect(() => {
-    loadConfig().then(async (c) => {
-      setConfig(c);
+  const {
+    config,
+    screen,
+    setScreen,
+    ollamaModels,
+    setOllamaModels,
+    saveAndSet,
+    onSaveField,
+  } = useAppConfig({
+    onBooted: (c, a) => {
       setVolume(c.volume);
       // Local backends: prime the mpv singleton with the persisted volume so
       // the first track plays at the right level. Spotify volume is set per
       // playback action since there's no persistent mpv for it.
       player.setInitialVolume(c.volume);
-      const a = await isAuthenticated(c);
-      authedRef.current = a;
-      setAuthed(a);
+      markAuthed(a);
       // Spotify auth only matters for the spotify backend; local backends
       // need external binaries instead.
       if (c.musicBackend === "spotify") {
@@ -207,10 +119,66 @@ export function App() {
         const depError = checkLocalPlaybackDeps(c.musicBackend);
         if (depError) setError(depError);
       }
-      setOllamaModels(await listOllamaModels(c.ollamaUrl));
-      setScreen(isConfigured(c) ? "main" : "wizard");
-    });
-  }, []);
+    },
+  });
+
+  const provider: AgentProvider | null = useProvider(config);
+  const modelLabel = modelLabelFor(config);
+
+  const taste = useTasteActions(provider, { show });
+  const { priorPlaylistRef } = taste;
+
+  const history = useHistoryScreen(config, provider, { setError });
+  const {
+    historyEntries,
+    setHistoryEntries,
+    historyDetail,
+    setHistoryDetail,
+    historyScrollRef,
+  } = history;
+
+  const {
+    loading,
+    progress,
+    spinnerFrame,
+    elapsed,
+    escArmed,
+    events,
+    resolved,
+    awaitingConfirm,
+    committedPlaylist,
+    selectedIndex,
+    setSelectedIndex,
+    setResolved,
+    setAwaitingConfirm,
+    setCommittedPlaylist,
+    clarifyQuestions,
+    clarifyStepIndex,
+    clarifyCustomMode,
+    setClarifyCustomMode,
+    clarifyCustomText,
+    setClarifyCustomText,
+    armEsc,
+    disarmEsc,
+    cancelInFlight,
+    cancelClarify,
+    cancelResult,
+    resetSession,
+    advanceClarify,
+    runResolve,
+    resolveHistoryEntry,
+    savePlaylist,
+    handleConfirmAction,
+  } = useGeneration(config, provider, {
+    setError,
+    show,
+    markAuthed,
+    priorPlaylistRef,
+    recordTasteSession: taste.recordTasteSession,
+    recordHistorySession: history.recordHistorySession,
+    closeHistory: history.closeHistory,
+    onInteracted: () => setHasInteracted(true),
+  });
 
   // Poll current playback state (which track is playing / paused):
   // spotify — its Web API /me/player; local backends — the mpv-backed player.
@@ -285,8 +253,6 @@ export function App() {
     lyricsAnchorRef,
   );
 
-  const connectingRef = useRef(false);
-
   const slashCommands = useMemo(
     () => (input.trimStart().startsWith("/") ? filterSlashCommands(input) : []),
     [input],
@@ -298,9 +264,6 @@ export function App() {
     slashCommands.length > 0;
 
   const isSpotifyBackend = config?.musicBackend !== "soundcloud" && config?.musicBackend !== "youtube-music";
-
-  const provider: AgentProvider | null = useProvider(config);
-  const modelLabel = modelLabelFor(config);
 
   const lines: ResultLine[] = useMemo(() => {
     if (!resolved) return [];
@@ -319,24 +282,6 @@ export function App() {
       };
     });
   }, [resolved]);
-
-  function cancelClarify() {
-    setClarifyQuestions(null);
-    setClarifyStepIndex(0);
-    setClarifyAnswers([]);
-    setClarifyCustomMode(false);
-    setClarifyCustomText("");
-    setPendingBasePrompt(null);
-  }
-
-  function cancelResult() {
-    setResolved(null);
-    setAwaitingConfirm(false);
-    setCommittedPlaylist(null);
-    setPendingBasePrompt(null);
-    setClarifyAnswers([]);
-    priorPlaylistRef.current = null;
-  }
 
   useKeyboard(async (key) => {
     if (key.ctrl && key.name === "c") process.exit(0);
@@ -358,13 +303,12 @@ export function App() {
     }
     if (overlay?.kind === "forget-confirm") {
       if (key.name === "r") {
-        const taste = await loadTaste();
-        await saveTaste({ ...taste, sessions: [] });
+        await taste.clearSessions();
         setOverlay(null);
         return;
       }
       if (key.name === "a") {
-        await saveTaste(emptyTaste());
+        await taste.clearAll();
         setOverlay(null);
         return;
       }
@@ -384,7 +328,7 @@ export function App() {
         else if (key.name === "pageup") box?.scrollBy(-0.5, "viewport");
         else if (key.name === "pagedown") box?.scrollBy(0.5, "viewport");
         else if (key.name === "escape") setHistoryDetail(null);
-        else if (key.name === "return") void loadHistorySession(historyDetail);
+        else if (key.name === "return") void resolveHistoryEntry(historyDetail);
         else if (key.name === "c" && !key.ctrl) {
           const entry = historyDetail;
           void copyToClipboard(historyReasoningToText(entry))
@@ -470,24 +414,9 @@ export function App() {
       if (loading) {
         if (escArmed) {
           disarmEsc();
-          // If the agent loop is parked on the deferred clarify tool call,
-          // aborting the controller alone won't unblock it — the loop is
-          // awaiting a Promise that only `advanceClarify` resolves. Drain it
-          // with an empty answer so dispatchTool returns; the loop's next
-          // iteration will see `signal.aborted` and throw, releasing loading.
-          const drain = clarifyResolverRef.current as ((answer: string) => void) | null;
-          if (drain) {
-            clarifyResolverRef.current = null;
-            drain("");
-          }
-          abortRef.current?.abort();
+          cancelInFlight();
         } else {
-          setEscArmed(true);
-          if (escTimerRef.current) clearTimeout(escTimerRef.current);
-          escTimerRef.current = setTimeout(() => {
-            escTimerRef.current = null;
-            setEscArmed(false);
-          }, 2000);
+          armEsc();
         }
         return;
       }
@@ -586,45 +515,21 @@ export function App() {
     }
   });
 
+  /** Login, then re-run whatever prompt triggered the connect flow. The auth
+   * mechanics live in useAuthFlow; the resume choreography is wiring. */
   async function runLoginAndResume(
     resumePrompt: string | null,
     cfgOverride?: Config,
   ): Promise<void> {
     const cfg = cfgOverride ?? config;
-    if (!cfg || connectingRef.current) return;
-    if (!isValidClientId(cfg.spotifyClientId)) {
-      setPendingPrompt(resumePrompt);
-      setOverlay({ kind: "client-id", text: "" });
-      return;
-    }
-    connectingRef.current = true;
-    setConnecting(true);
-    setError(undefined);
-    try {
-      // /login (resumePrompt === null) means the user explicitly asked to
-      // re-connect, so force a fresh browser-based auth instead of returning
-      // the cached token.
-      const token =
-        resumePrompt === null
-          ? await forceFreshLogin(cfg)
-          : await getAccessToken(cfg);
-      void token;
-      authedRef.current = true;
-      setAuthed(true);
-      if (resumePrompt === null) show("logged in ✓");
-      if (resumePrompt) {
-        if (resumePrompt === "__random__") {
-          setHasInteracted(true);
-          await runResolve(generateRandomPlaylistUser(), []);
-        } else {
-          await handleSubmit(resumePrompt);
-        }
-      }
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
-    } finally {
-      connectingRef.current = false;
-      setConnecting(false);
+    if (!cfg) return;
+    const ok = await login(cfg, resumePrompt);
+    if (!ok || !resumePrompt) return;
+    if (resumePrompt === "__random__") {
+      setHasInteracted(true);
+      await runResolve(generateRandomPlaylistUser(), []);
+    } else {
+      await handleSubmit(resumePrompt);
     }
   }
 
@@ -638,8 +543,7 @@ export function App() {
       );
       return;
     }
-    const next = await saveConfig({ spotifyClientId: id });
-    setConfig(next);
+    const next = await saveAndSet({ spotifyClientId: id });
     setOverlay(null);
     const resume = pendingPrompt;
     setPendingPrompt(null);
@@ -649,13 +553,12 @@ export function App() {
   // Ctrl+P quick-toggle between ollama and claude-cli. The full /model picker
   // is a multi-level config UI; this shortcut bypasses it for the common case.
   async function quickToggleModel() {
-    const next = await saveConfig({
+    await saveAndSet({
       defaultProvider: config?.defaultProvider === "ollama" ? "claude-cli" : "ollama",
       ...(config?.defaultProvider === "ollama"
         ? { claudeModel: config?.claudeModel ?? "sonnet" }
         : { ollamaModel: config?.ollamaModel }),
     });
-    setConfig(next);
     setOverlay(null);
   }
 
@@ -693,18 +596,9 @@ export function App() {
         return missing;
       }
     }
-    const next = await saveConfig({ defaultProvider: provider });
-    setConfig(next);
+    await saveAndSet({ defaultProvider: provider });
     if (opts?.closePicker ?? true) setOverlay(null);
     return null;
-  }
-
-  // /model: save a field edit without switching provider (editing apiKey/baseUrl
-  // on a provider's config page). Keeps the picker open so the user can then
-  // hit "▶ use".
-  async function onSaveField(partial: FileConfig) {
-    const next = await saveConfig(partial);
-    setConfig(next);
   }
 
   // Push a new volume to the active backend and persist it. Spotify routes
@@ -714,8 +608,7 @@ export function App() {
   async function applyVolume(pct: number) {
     const clamped = Math.max(0, Math.min(100, Math.round(pct)));
     setVolume(clamped);
-    const next = await saveConfig({ volume: clamped });
-    setConfig(next);
+    await saveAndSet({ volume: clamped });
     try {
       if (isSpotifyBackend && authedRef.current && config) {
         const token = await getAccessToken(config);
@@ -762,304 +655,19 @@ export function App() {
     setResolved(null);
     setCommittedPlaylist(null);
     setSelectedIndex(0);
-    const next = await saveConfig({ musicBackend: backend });
-    setConfig(next);
+    await saveAndSet({ musicBackend: backend });
     setOverlay(null);
     setError(checkLocalPlaybackDeps(backend) ?? undefined);
   }
 
   async function applyEffortChoice(effort: string) {
-    const next = await saveConfig({ claudeEffort: effort });
-    setConfig(next);
+    await saveAndSet({ claudeEffort: effort });
     setOverlay(null);
   }
 
   async function applySystemPrompt(value: string) {
-    const next = await saveConfig({ customSystemPrompt: value });
-    setConfig(next);
+    await saveAndSet({ customSystemPrompt: value });
     setOverlay(null);
-  }
-
-  async function runResolve(
-    prompt: string,
-    qa: ClarifyAnswer[],
-  ): Promise<ResolvedPlaylist | null> {
-    if (!config || !provider) return null;
-    setError(undefined);
-    setLoading(true);
-    setProgress(null);
-    setElapsed(0);
-    setStartTime(Date.now());
-    setEvents([]);
-    eventsRef.current = [];
-    // Clear the previous run's results so the reasoning transcript takes over
-    // the screen (it only renders when the track list is empty). Without this,
-    // a re-run leaves the stale list up and the thinking view never shows.
-    setResolved(null);
-    setAwaitingConfirm(false);
-    setCommittedPlaylist(null);
-    // If a stale resolver lingers from a cancelled run, drop it so the next
-    // clarify tool call installs a fresh one.
-    clarifyResolverRef.current = null;
-    const controller = new AbortController();
-    abortRef.current = controller;
-    try {
-      const music = await createMusicProvider(config);
-      if (config.musicBackend === "spotify") setAuthed(true);
-      const taste = await loadTaste();
-      // System-prompt taste prefix carries the full curated+raw digest; the
-      // clarify channel carries just artist names grounded in the user's
-      // prior taste (decision Q4: only names, not the whole file).
-      const tasteFull = tastePromptPrefix(taste) || undefined;
-      const tasteArtists = tasteForClarify(taste) || undefined;
-      // Agent-loop system prompt carries the full curated+raw taste digest; the
-      // taste-artists channel below is appended only when an artist-name list
-      // was extractable (decision Q4: clarify grounded in prior artist picks),
-      // and is used as additional prefix to ease clarify grounding without
-      // duplicating the entire taste file.
-      const tasteClarifyChannel = tasteArtists
-        ? `\n\n${tasteArtists}`
-        : "";
-      const r = await resolvePlaylist(
-        provider,
-        music,
-        prompt,
-        qa,
-        {
-          onProgress: (p) => setProgress(p),
-          onEvent: (e) =>
-            setEvents((prev) => {
-              const next = reduceEvents(prev, e);
-              eventsRef.current = next;
-              return next;
-            }),
-          signal: controller.signal,
-          tasteContext: (tasteFull ?? "") + tasteClarifyChannel || undefined,
-          priorPlaylistContext: priorPlaylistRef.current ?? undefined,
-          onClarifyTool: async (question, options) => {
-            // Surface the question to the existing ClarifyPrompt UI; await the
-            // user's answer via a deferred resolver.
-            setClarifyQuestions([{ text: question, options }]);
-            setClarifyStepIndex(0);
-            setClarifyCustomMode(false);
-            setClarifyCustomText("");
-            return new Promise<string>((resolve) => {
-              clarifyResolverRef.current = resolve;
-            });
-          },
-        },
-      );
-      setResolved(r);
-      setCommittedPlaylist(null);
-      setAwaitingConfirm(true);
-      setSelectedIndex(0);
-      // Capture the just-finished playlist as soft seed for the NEXT request.
-      // /clear nulls this ref; the next runResolve reads it before overwriting.
-      priorPlaylistRef.current = r.resolved.map((t) => `${t.artist} – ${t.title}`);
-      void recordTasteSession(r);
-      void recordHistorySession(prompt, r);
-      return r;
-    } catch (e) {
-      // User-initiated cancel is not an error. But a stuck deferred clarify
-      // (cancelled mid-question) must be drained so a future generate call
-      // doesn't see a stale resolver.
-      const drain = clarifyResolverRef.current as ((answer: string) => void) | null;
-      if (drain) {
-        drain("");
-        clarifyResolverRef.current = null;
-      }
-      if (!(
-        controller.signal.aborted ||
-        (e instanceof Error && e.name === "AbortError")
-      )) {
-        setError(String(e instanceof Error ? e.message : e));
-      }
-      return null;
-    } finally {
-      abortRef.current = null;
-      disarmEsc();
-      setLoading(false);
-      setProgress(null);
-      setStartTime(null);
-    }
-  }
-
-  // Best-effort taste memory: only sessions where ≥50% of tracks resolved.
-  async function recordTasteSession(r: ResolvedPlaylist) {
-    const total = r.resolved.length + r.unresolved.length;
-    if (total === 0 || r.resolved.length / total < 0.5) return;
-    try {
-      const header = new Date().toISOString().slice(0, 16);
-      sessionHeaderRef.current = header;
-      let taste = await loadTaste();
-      taste = appendSession(taste, {
-        header,
-        lines: r.resolved.map((t) => `- ${t.artist} – ${t.title}`),
-      });
-      if (needsRotation(taste) && provider) {
-        taste = await rotate(taste, (raw) =>
-          provider.generate(ROTATE_SYSTEM, raw, undefined, undefined, { reasoningEffort: "none", maxTokens: 512 }).then(
-            (r) => r.text,
-          ),
-        ).catch(() => taste);
-      }
-      await saveTaste(taste);
-    } catch {
-      // never block generation on memory failures
-    }
-  }
-
-  // Persist the finished session (prompt + playlist + reasoning transcript)
-  // into history.json, then patch in an LLM-summarized title. The entry is
-  // saved immediately with the playlist name as fallback so a failed/slow
-  // title call never loses the session.
-  async function recordHistorySession(prompt: string, r: ResolvedPlaylist) {
-    if (!config) return;
-    try {
-      const header = new Date().toISOString();
-      const entry: HistoryEntry = {
-        header,
-        prompt,
-        title: r.name || prompt,
-        playlistName: r.name,
-        tracks: r.resolved.map((t) => ({ artist: t.artist, title: t.title })),
-        events: eventsRef.current,
-      };
-      await appendHistory(config, entry);
-      if (!provider) return;
-      const digest = [
-        `Request: ${prompt}`,
-        `Playlist: ${r.name}`,
-        "Tracks:",
-        ...entry.tracks.map((t) => `- ${t.artist} – ${t.title}`),
-      ].join("\n");
-      const title = (await provider.generate(HISTORY_TITLE_SYSTEM, digest)).text
-        .trim()
-        .split("\n")[0]
-        ?.trim();
-      if (title) await updateHistoryTitle(config, header, title.slice(0, 60));
-    } catch {
-      // never block generation on history failures
-    }
-  }
-
-  // /history playback: re-resolve a stored session's tracks against the
-  // current backend (stored entries carry no URIs — the backend may have
-  // changed since) and load them into the normal resolved list, where the
-  // existing playback/save/like flow takes over.
-  async function loadHistorySession(entry: HistoryEntry) {
-    if (!config || loading) return;
-    setHistoryEntries(null);
-    setHistoryDetail(null);
-    setHasInteracted(true);
-    setError(undefined);
-    setLoading(true);
-    setProgress(null);
-    setElapsed(0);
-    setStartTime(Date.now());
-    const controller = new AbortController();
-    abortRef.current = controller;
-    try {
-      const music = await createMusicProvider(config);
-      const { resolved, unresolved } = await resolveTracks(
-        entry.tracks,
-        music,
-        controller.signal,
-        setProgress,
-      );
-      if (resolved.length === 0) {
-        setError(`no tracks resolved on ${music.name}`);
-        return;
-      }
-      setResolved({
-        name: entry.playlistName || entry.title,
-        description: `Replayed from history: ${entry.prompt}`,
-        resolved,
-        unresolved,
-      });
-      setCommittedPlaylist(null);
-      // No confirm step — the list is immediately playable (Enter plays).
-      setAwaitingConfirm(false);
-      setSelectedIndex(0);
-      priorPlaylistRef.current = resolved.map((t) => `${t.artist} – ${t.title}`);
-      show(`loaded from history · ${resolved.length} tracks — enter to play`);
-    } catch (e) {
-      if (!(controller.signal.aborted || (e instanceof Error && e.name === "AbortError"))) {
-        setError(String(e instanceof Error ? e.message : e));
-      }
-    } finally {
-      abortRef.current = null;
-      disarmEsc();
-      setLoading(false);
-      setProgress(null);
-      setStartTime(null);
-    }
-  }
-
-  function advanceClarify(answer: string) {
-    if (!clarifyQuestions) return;
-    // Agent loop drives clarify through the `clarify` tool — one question per
-    // call. The deferred resolver installed by `runResolve`'s `onClarifyTool`
-    // hook is held by `clarifyResolverRef`. Resolving it unblocks the loop and
-    // lets the model continue with the user's answer. Multi-question clarify
-    // from a single `clarify` call is explicitly out of scope (loop decides).
-    const resolver = clarifyResolverRef.current;
-    setClarifyCustomMode(false);
-    setClarifyCustomText("");
-    setClarifyQuestions(null);
-    setClarifyStepIndex(0);
-    if (resolver) {
-      clarifyResolverRef.current = null;
-      resolver(answer);
-    }
-  }
-
-  async function handleConfirmAction(action: ConfirmAction) {
-    if (action === "cancel") {
-      cancelResult();
-      return;
-    }
-    if (action === "listen") {
-      // Keep the resolved list on screen for playback without committing a playlist.
-      setAwaitingConfirm(false);
-      return;
-    }
-    if (action === "continue") {
-      if (!pendingBasePrompt) return;
-      await runResolve(pendingBasePrompt, clarifyAnswers);
-      return;
-    }
-    // add
-    await savePlaylist();
-  }
-
-  async function savePlaylist() {
-    if (!config || !resolved) return;
-    setError(undefined);
-    try {
-      const music = await createMusicProvider(config);
-      if (!music.capabilities.remotePlaylists) {
-        // No playlists on the service side — the local queue is the playlist.
-        await player.queue(resolved.resolved, music);
-        setAwaitingConfirm(false);
-        show(`queued ${resolved.resolved.length} tracks locally`);
-        return;
-      }
-      setAuthed(true);
-      const playlist = await commitPlaylist(
-        music,
-        resolved.name,
-        resolved.description,
-        resolved.resolved,
-        setProgress,
-      );
-      setCommittedPlaylist(playlist);
-      setAwaitingConfirm(false);
-      setProgress(null);
-      show(`saved as playlist · ${playlist.name ?? playlist.uri}`);
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
-    }
   }
 
   async function handleSubmit(value: string) {
@@ -1123,26 +731,11 @@ export function App() {
       setInput("");
       // Abort any in-flight generation (mirror the double-Esc path) so a
       // clear mid-generation actually stops the loop instead of racing it.
-      if (loading) {
-        const drain = clarifyResolverRef.current as ((answer: string) => void) | null;
-        if (drain) {
-          clarifyResolverRef.current = null;
-          drain("");
-        }
-        abortRef.current?.abort();
-      }
+      if (loading) cancelInFlight();
       // Stop local playback so a still-running mpv/Spotify doesn't outlive
       // the cleared session (mirror applyBackendChoice).
       await player.stop();
-      setResolved(null);
-      setCommittedPlaylist(null);
-      setAwaitingConfirm(false);
-      setPendingBasePrompt(null);
-      setClarifyQuestions(null);
-      setClarifyStepIndex(0);
-      setClarifyAnswers([]);
-      setEvents([]);
-      setProgress(null);
+      resetSession();
       setError(undefined);
       setCurrentlyPlayingUri(null);
       setIsPlaying(false);
@@ -1151,7 +744,6 @@ export function App() {
       setLyricsFullScreen(false);
       setCurrentTrackMeta({ uri: null, artist: "", title: "", durationMs: 0 });
       clearLyricsCache();
-      setSelectedIndex(0);
       // Wipe the prior-playlist seed so the next request starts fresh.
       priorPlaylistRef.current = null;
       show("session cleared");
@@ -1167,29 +759,15 @@ export function App() {
         setError("nothing to like — no current track");
         return;
       }
-      const line = comment
-        ? `- ${track.artist} – ${track.title} (liked: "${comment}")`
-        : `- ${track.artist} – ${track.title} (liked)`;
-      const taste = await loadTaste();
-      await saveTaste(addLine(taste, sessionHeaderRef.current, line));
-      show(`liked · ${track.artist} – ${track.title}`);
+      await taste.likeTrack(track, comment);
       return;
     }
     if (trimmed === "/memory") {
       setInput("");
-      const taste = await loadTaste();
-      if (taste.preferences.length === 0 && taste.sessions.length === 0) {
-        setOverlay({ kind: "memory", text: "taste memory is empty — /like tracks or generate playlists" });
-        return;
-      }
-      const last = taste.sessions.at(-1);
+      const text = await taste.buildMemoryText();
       setOverlay({
         kind: "memory",
-        text: [
-          "Preferences:",
-          ...(taste.preferences.length ? taste.preferences : ["- (none yet)"]),
-          ...(last ? ["", `Last session (${last.header}):`, ...last.lines] : []),
-        ].join("\n"),
+        text: text ?? "taste memory is empty — /like tracks or generate playlists",
       });
       return;
     }
@@ -1208,15 +786,7 @@ export function App() {
     }
     if (trimmed === "/history") {
       setInput("");
-      if (!config) return;
-      const entries = await loadHistory(config);
-      if (entries.length === 0) {
-        setError("no history yet — generate a playlist first");
-        return;
-      }
-      setHistoryDetail(null);
-      // Newest first in the list.
-      setHistoryEntries(entries.slice().reverse());
+      await history.openHistory();
       return;
     }
     if (trimmed === "/forget") {
@@ -1261,11 +831,10 @@ export function App() {
     setHasInteracted(true);
     setError(undefined);
     setInput("");
-    setElapsed(0);
-    setEvents([]);
     // Agent loop drives clarify through the `clarify` tool — no separate
-    // pre-step. runResolve sets progress and aborts itself; the loop surfaces
-    // questions to ClarifyPrompt via the deferred resolver in `advanceClarify`.
+    // pre-step. runResolve resets elapsed/events/progress synchronously on
+    // entry and aborts itself; the loop surfaces questions to ClarifyPrompt
+    // via the deferred resolver in `advanceClarify`.
     await runResolve(trimmed, []);
   }
 
@@ -1438,14 +1007,13 @@ export function App() {
           <SetupWizard
             ollamaModels={ollamaModels}
             onDone={async (r) => {
-              const next = await saveConfig({
+              await saveAndSet({
                 defaultProvider: r.provider,
                 musicBackend: r.musicBackend,
                 ...(r.soundcloudClientId ? { soundcloudClientId: r.soundcloudClientId } : {}),
                 ...(r.ollamaModel ? { ollamaModel: r.ollamaModel } : {}),
                 ...(r.claudeModel ? { claudeModel: r.claudeModel } : {}),
               });
-              setConfig(next);
               if (r.musicBackend === "spotify" && !authedRef.current) setOverlay({ kind: "connect-confirm" });
               setScreen("main");
             }}
