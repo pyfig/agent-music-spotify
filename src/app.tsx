@@ -40,6 +40,7 @@ import {
   replacesMainRegion,
   type OverlayState,
 } from "./app/overlay";
+import { dispatchCommand, type CommandCtx } from "./app/commands";
 import { layoutBudget, LYRICS_PANEL_ROWS } from "./ui/layout";
 import { LyricsPanel } from "./ui/LyricsPanel";
 import { LyricsScreen } from "./ui/LyricsScreen";
@@ -565,6 +566,47 @@ export function App() {
     setOverlay(null);
   }
 
+  /** Explicit state+action surface handed to the command dispatch table. */
+  function commandCtx(): CommandCtx {
+    return {
+      config,
+      providerReady: provider !== null,
+      loading,
+      isSpotifyBackend,
+      authedRef,
+      resolved,
+      committedPlaylist,
+      currentlyPlayingUri,
+      selectedIndex,
+      lyricsMode,
+      lyricsFullScreen,
+      priorPlaylistRef,
+      setError,
+      show,
+      setOverlay,
+      openModelPicker: async () => {
+        setOllamaModels(await listOllamaModels(config!.ollamaUrl));
+        setOverlay({ kind: "model-picker" });
+      },
+      runLoginAndResume: (resume) => runLoginAndResume(resume),
+      savePlaylist,
+      cancelInFlight,
+      resetSession,
+      resetNowPlaying,
+      stopPlayer: () => player.stop(),
+      setLyricsMode,
+      setLyricsFullScreen,
+      clearLyricsCache,
+      likeTrack: taste.likeTrack,
+      buildMemoryText: taste.buildMemoryText,
+      openHistory: history.openHistory,
+      setPendingPrompt,
+      setHasInteracted,
+      runResolve,
+      quit: () => process.exit(0),
+    };
+  }
+
   async function handleSubmit(value: string) {
     let trimmed = value.trim();
     // Slash menu open: run the highlighted command, not the partial text.
@@ -574,140 +616,9 @@ export function App() {
       if (picked) trimmed = picked.cmd;
       setSlashIndex(0);
     }
-    if (trimmed === "/model") {
-      setInput("");
-      setOllamaModels(await listOllamaModels(config!.ollamaUrl));
-      setOverlay({ kind: "model-picker" });
-      return;
-    }
-    if (trimmed === "/music") {
-      setInput("");
-      setOverlay({ kind: "backend-picker" });
-      return;
-    }
-    if (trimmed === "/login") {
-      setInput("");
-      await runLoginAndResume(null);
-      return;
-    }
-    if (trimmed === "/clientid") {
-      setInput("");
-      setOverlay({ kind: "client-id", text: "" });
-      return;
-    }
-    if (trimmed === "/effort") {
-      setInput("");
-      if (config?.defaultProvider === "ollama") {
-        setError("effort only applies to the Claude provider");
-        return;
-      }
-      setOverlay({ kind: "effort-picker" });
-      return;
-    }
-    if (trimmed === "/systemprompt") {
-      setInput("");
-      setOverlay({ kind: "system-prompt", text: config?.customSystemPrompt ?? "" });
-      return;
-    }
-    if (trimmed === "/save") {
-      setInput("");
-      if (!resolved) {
-        setError("nothing to save — generate a track list first");
-        return;
-      }
-      if (committedPlaylist) {
-        setError("already saved as a playlist");
-        return;
-      }
-      await savePlaylist();
-      return;
-    }
-    if (trimmed === "/clear") {
-      setInput("");
-      // Abort any in-flight generation (mirror the double-Esc path) so a
-      // clear mid-generation actually stops the loop instead of racing it.
-      if (loading) cancelInFlight();
-      // Stop local playback so a still-running mpv/Spotify doesn't outlive
-      // the cleared session (mirror applyBackendChoice).
-      await player.stop();
-      resetSession();
-      setError(undefined);
-      resetNowPlaying();
-      setLyricsMode(false);
-      setLyricsFullScreen(false);
-      clearLyricsCache();
-      // Wipe the prior-playlist seed so the next request starts fresh.
-      priorPlaylistRef.current = null;
-      show("session cleared");
-      return;
-    }
-    if (trimmed === "/like" || trimmed.startsWith("/like ")) {
-      setInput("");
-      const comment = trimmed.slice("/like".length).trim();
-      const track =
-        resolved?.resolved.find((t) => t.uri === currentlyPlayingUri) ??
-        resolved?.resolved[selectedIndex];
-      if (!track) {
-        setError("nothing to like — no current track");
-        return;
-      }
-      await taste.likeTrack(track, comment);
-      return;
-    }
-    if (trimmed === "/memory") {
-      setInput("");
-      const text = await taste.buildMemoryText();
-      setOverlay({
-        kind: "memory",
-        text: text ?? "taste memory is empty — /like tracks or generate playlists",
-      });
-      return;
-    }
-    if (trimmed === "/lyrics") {
-      setInput("");
-      // Cycle: off → compact → fullscreen → off
-      if (lyricsFullScreen) {
-        setLyricsFullScreen(false);
-        setLyricsMode(false);
-      } else if (lyricsMode) {
-        setLyricsFullScreen(true);
-      } else {
-        setLyricsMode(true);
-      }
-      return;
-    }
-    if (trimmed === "/history") {
-      setInput("");
-      await history.openHistory();
-      return;
-    }
-    if (trimmed === "/forget") {
-      setInput("");
-      setOverlay({ kind: "forget-confirm" });
-      return;
-    }
-    if (trimmed === "/quit") process.exit(0);
-    if (trimmed === "/random") {
-      setInput("");
-      if (!config || !provider || loading) {
-        setError("not ready — still loading or no provider");
-        return;
-      }
-      if (isSpotifyBackend && !authedRef.current) {
-        setPendingPrompt("__random__");
-        setOverlay({ kind: "connect-confirm" });
-        return;
-      }
-      setHasInteracted(true);
-      const r = await runResolve(generateRandomPlaylistUser(), []);
-      if (r) show(`random playlist ready · ${r.resolved.length} tracks`);
-      return;
-    }
-    // Every real command returned above — anything else starting with "/" is
-    // an unknown/removed command; error instead of feeding it to the agent.
     if (trimmed.startsWith("/")) {
       setInput("");
-      setError(`unknown command: ${trimmed.split(/\s+/)[0]}`);
+      await dispatchCommand(trimmed, commandCtx());
       return;
     }
     if (trimmed.length === 0) {
