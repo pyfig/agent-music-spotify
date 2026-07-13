@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import type { AgentEvent } from "../agent/types";
-import { displayArtist, theme } from "./theme";
-import { wrappedRows, MIN_RESULTS_HEIGHT } from "./layout";
+import { displayArtist, theme, truncateLabel } from "./theme";
+import { MIN_RESULTS_HEIGHT } from "./layout";
 import { ReasoningTranscript } from "./ReasoningTranscript";
 
 export interface ResultLine {
@@ -43,6 +43,25 @@ interface ResultsListProps {
   width: number;
 }
 
+/**
+ * One-line row label: artist keeps at most its share, the title always gets a
+ * visible tail, and "  not found" never truncates away. Rows never wrap — a
+ * continuation line reads as lyric text next to the lyrics panel. Exported
+ * for tests.
+ */
+export function truncatedRowParts(
+  line: Pick<ResultLine, "label" | "artist" | "title" | "resolved">,
+  textWidth: number,
+): { artistText: string; titleText: string } {
+  const suffixCols = line.resolved ? 0 : "  not found".length;
+  const avail = Math.max(4, textWidth - suffixCols);
+  if (line.artist && line.title) {
+    const artistText = truncateLabel(`${displayArtist(line.artist)} — `, Math.max(4, avail - 8));
+    return { artistText, titleText: truncateLabel(line.title, Math.max(1, avail - artistText.length)) };
+  }
+  return { artistText: "", titleText: truncateLabel(line.label, avail) };
+}
+
 export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayingUri, isPlaying, loading, events = [], spinnerFrame, reasoningScrollRef, maxHeight, width }: ResultsListProps) {
   const scrollRef = useRef<ScrollBoxRenderable>(null);
 
@@ -77,13 +96,9 @@ export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayi
   // must be sized from its content or a void opens before the input cluster.
   // -1 col for the scrollbar that appears when the list overflows.
   const textWidth = Math.max(10, width - 3 - (indexWidth + 1) - 1);
-  const contentRows = lines.reduce((rows, line) => {
-    const label =
-      line.artist && line.title
-        ? `${displayArtist(line.artist)} — ${line.title}${line.resolved ? "" : "  not found"}`
-        : `${line.label}${line.resolved ? "" : "  not found"}`;
-    return rows + wrappedRows(label, textWidth);
-  }, 0);
+  // Rows are single-line: overlong labels truncate with an ellipsis. A wrapped
+  // continuation line reads as lyric text next to the lyrics panel.
+  const contentRows = lines.length;
   const chromeRows = (title ? 1 : 0) + (events.length > 0 && loading ? 1 : 0);
   const boxHeight = Math.max(MIN_RESULTS_HEIGHT, Math.min(maxHeight, contentRows + chromeRows));
 
@@ -122,9 +137,10 @@ export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayi
           const artistFg = isCurrentlyPlaying ? theme.green : theme.muted;
           const rowBg = isSelected ? theme.surface1 : undefined;
           const num = String(i + 1).padStart(indexWidth);
+          const { artistText, titleText } = truncatedRowParts(line, textWidth);
           return (
-            // Marker + index in fixed columns, label in its own flex column so
-            // wrapped continuation lines keep a hanging indent.
+            // Marker + index in fixed columns, label truncated to one line so
+            // long titles never wrap into a row that reads as lyric text.
             <box key={line.key} style={{ flexDirection: "row", backgroundColor: rowBg }}>
               <box style={{ width: 3, flexShrink: 0 }}>
                 <text fg={isCurrentlyPlaying ? theme.green : theme.accent} bg={rowBg}>
@@ -136,16 +152,16 @@ export function ResultsList({ title, count, lines, selectedIndex, currentlyPlayi
                   {num}{" "}
                 </text>
               </box>
-              <box style={{ flexGrow: 1, flexShrink: 1 }}>
+              <box style={{ flexGrow: 1, flexShrink: 1, overflow: "hidden" }}>
                 {line.artist && line.title ? (
-                  <text bg={rowBg} wrapMode="word">
-                    <span fg={artistFg}>{displayArtist(line.artist)} — </span>
-                    <span fg={titleFg}>{line.title}</span>
+                  <text bg={rowBg}>
+                    <span fg={artistFg}>{artistText}</span>
+                    <span fg={titleFg}>{titleText}</span>
                     {line.resolved ? "" : <span fg={theme.red}>  not found</span>}
                   </text>
                 ) : (
-                  <text fg={titleFg} bg={rowBg} wrapMode="word">
-                    {line.label}
+                  <text fg={titleFg} bg={rowBg}>
+                    {titleText}
                     {line.resolved ? "" : "  not found"}
                   </text>
                 )}

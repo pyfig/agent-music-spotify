@@ -90,21 +90,36 @@ describe("LyricsScreen karaoke window", () => {
 });
 
 describe("LyricsPanel", () => {
+  const SEP = "── ♪ lyrics ──";
+
   test("prev / current / next rows with the middle row marked", () => {
-    const el = LyricsPanel({ lyrics: makeLyrics(10), currentLine: 5 });
+    const el = LyricsPanel({ state: "synced", lyrics: makeLyrics(10), currentLine: 5 });
     const rows = textRows(el);
-    expect(rows).toEqual(["line 4", "▸ line 5", "line 6"]);
+    expect(rows).toEqual([SEP, "line 4", "▸ line 5", "line 6"]);
   });
 
   test("placeholders keep the panel at three rows on the first line", () => {
-    const el = LyricsPanel({ lyrics: makeLyrics(10), currentLine: 0 });
+    const el = LyricsPanel({ state: "synced", lyrics: makeLyrics(10), currentLine: 0 });
     const rows = textRows(el);
-    expect(rows).toEqual(["—", "▸ line 0", "line 1"]);
+    expect(rows).toEqual([SEP, "—", "▸ line 0", "line 1"]);
   });
 
   test("no current line yet renders placeholders, still three rows", () => {
-    const el = LyricsPanel({ lyrics: makeLyrics(10), currentLine: -1 });
+    const el = LyricsPanel({ state: "synced", lyrics: makeLyrics(10), currentLine: -1 });
     const rows = textRows(el);
-    expect(rows).toEqual(["—", "—", "—"]);
+    expect(rows).toEqual([SEP, "—", "—", "—"]);
+  });
+
+  test.each([
+    ["waiting", "waiting for playback…"],
+    ["loading", "loading lyrics…"],
+    ["none", "no synchronized lyrics for this track"],
+    ["error", "lyrics unavailable — fetch failed"],
+  ] as const)("state %s renders its message at constant row count", (state, msg) => {
+    const el = LyricsPanel({ state, lyrics: null, currentLine: -1 });
+    const rows = textRows(el);
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toBe(SEP);
+    expect(rows[2]).toBe(`♪ ${msg}`);
   });
 });

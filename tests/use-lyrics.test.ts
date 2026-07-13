@@ -222,6 +222,48 @@ describe("useLyrics", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  test("indeterminate fetch failure surfaces as \"error\" and is not cached", async () => {
+    globalThis.fetch = jest.fn(async () => new Response("oops", { status: 500 })) as unknown as typeof fetch;
+    const failingFetch = globalThis.fetch;
+    const meta: TrackMeta = { uri: "spotify:track:1", artist: "Artist", title: "Title", durationMs: 1000 };
+    const { result, rerender } = renderHook(
+      ({ lyricsMode, uri, meta }) => useTestHook(lyricsMode, uri, meta),
+      {
+        initialProps: {
+          lyricsMode: true,
+          uri: "spotify:track:1" as string | null,
+          meta,
+        },
+      },
+    );
+
+    await waitFor(() => expect(result.current.lyricsData).toBe("error"));
+
+    // Error is not cached: a later effect run (fresh meta identity, same URI)
+    // retries and a successful response replaces the error state.
+    globalThis.fetch = fetchMock;
+    rerender({ lyricsMode: true, uri: "spotify:track:1", meta: { ...meta } });
+    await waitFor(() => expect(result.current.lyricsData).toEqual(SAMPLE_LYRICS));
+    expect(failingFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("definitive miss surfaces as \"none\", not \"error\"", async () => {
+    globalThis.fetch = jest.fn(async () => new Response("[]", { status: 404 })) as unknown as typeof fetch;
+    const meta: TrackMeta = { uri: "spotify:track:1", artist: "Artist", title: "Title", durationMs: 1000 };
+    const { result } = renderHook(({ lyricsMode, uri, meta }) =>
+      useTestHook(lyricsMode, uri, meta),
+      {
+        initialProps: {
+          lyricsMode: true,
+          uri: "spotify:track:1" as string | null,
+          meta,
+        },
+      },
+    );
+
+    await waitFor(() => expect(result.current.lyricsData).toBe("none"));
+  });
+
   test("does not fetch when no track is playing", async () => {
     const meta: TrackMeta = { uri: null, artist: "", title: "", durationMs: 0 };
     const { result } = renderHook(({ lyricsMode, uri, meta }) =>

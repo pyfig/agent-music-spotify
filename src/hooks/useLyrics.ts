@@ -16,7 +16,9 @@ export interface LyricsAnchor {
 }
 
 export interface UseLyricsResult {
-  lyricsData: LyricsResult | "none" | null;
+  /** Parsed lyrics, "none" (definitive miss), "error" (fetch failed — not
+   * cached, a later effect run retries), or null (loading / lyrics off). */
+  lyricsData: LyricsResult | "none" | "error" | null;
   interpolatedPosMs: number;
   lyricsCurrentLine: number;
   clearLyricsCache: () => void;
@@ -33,7 +35,7 @@ export function useLyrics(
   currentTrackMeta: TrackMeta,
   anchorRef: React.MutableRefObject<LyricsAnchor | null>,
 ): UseLyricsResult {
-  const [lyricsData, setLyricsData] = useState<LyricsResult | "none" | null>(null);
+  const [lyricsData, setLyricsData] = useState<LyricsResult | "none" | "error" | null>(null);
   const [interpolatedPosMs, setInterpolatedPosMs] = useState(0);
   const [lyricsCurrentLine, setLyricsCurrentLine] = useState(-1);
   const lyricsCacheRef = useRef<LyricsCache>(new LyricsCache());
@@ -72,7 +74,9 @@ export function useLyrics(
     cache.fetch(currentlyPlayingUri, meta.artist, meta.title, meta.durationMs).then((result) => {
       if (!cancelled) {
         loadedUriRef.current = currentlyPlayingUri;
-        setLyricsData(result);
+        // null = indeterminate failure (uncached) — surface as "error" so the
+        // panel can say why; the next effect run retries via the cache miss.
+        setLyricsData(result === null ? "error" : result);
       }
     });
     return () => {
@@ -84,7 +88,7 @@ export function useLyrics(
   // synced lyrics exist. Reads the mutable anchor ref each tick so it always
   // uses the latest poll result without restarting the interval.
   useEffect(() => {
-    if (!lyricsMode || !lyricsData || lyricsData === "none" || !lyricsData.synced || !lyricsData.synced.length) {
+    if (!lyricsMode || !lyricsData || lyricsData === "none" || lyricsData === "error" || !lyricsData.synced || !lyricsData.synced.length) {
       setInterpolatedPosMs(0);
       setLyricsCurrentLine(-1);
       return;

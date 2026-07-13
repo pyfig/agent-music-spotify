@@ -14,6 +14,7 @@ import type { RemotePlaylist } from "../music/types";
 import type { Toast } from "../hooks/useToast";
 import type { TrackMeta } from "../hooks/useLyrics";
 import type { LyricsResult } from "../lyrics/client";
+import type { LyricsPanelState } from "../ui/LyricsPanel";
 
 /**
  * Derived render-state assembly for the main screen. App passes whole hook
@@ -50,7 +51,7 @@ export interface RenderDeps {
   setLyricsMode: (v: boolean) => void;
   lyricsFullScreen: boolean;
   setLyricsFullScreen: (v: boolean) => void;
-  lyricsData: LyricsResult | "none" | null;
+  lyricsData: LyricsResult | "none" | "error" | null;
   interpolatedPosMs: number;
   lyricsCurrentLine: number;
 
@@ -130,6 +131,22 @@ export interface RenderOut {
   justify: "center" | "flex-start";
 }
 
+/**
+ * Panel state while lyrics mode is on. "none" also covers plain-only lyrics —
+ * the compact panel can't scroll them (the full-screen view shows them).
+ * Exported for tests.
+ */
+export function lyricsPanelStateFor(
+  currentlyPlayingUri: string | null,
+  lyricsData: LyricsResult | "none" | "error" | null,
+): LyricsPanelState {
+  if (currentlyPlayingUri === null) return "waiting";
+  if (lyricsData === null) return "loading";
+  if (lyricsData === "none") return "none";
+  if (lyricsData === "error") return "error";
+  return lyricsData.synced?.length ? "synced" : "none";
+}
+
 export function useMainScreenRender(d: RenderDeps): RenderOut {
   const {
     config,
@@ -201,10 +218,10 @@ export function useMainScreenRender(d: RenderDeps): RenderOut {
     playingTrackIndex >= 0 && gen.resolved ? `${playingTrackIndex + 1}/${gen.resolved.resolved.length}` : null;
   const nowPlaying = playingTrack ? `${playingTrack.artist} – ${playingTrack.title}` : null;
   const trackDurationMs = pb.trackPos?.durationMs ?? playingTrack?.durationMs ?? null;
-  const lyricsResult = lyricsData !== null && lyricsData !== "none" ? lyricsData : null;
-  const hasSyncedLyrics = !!lyricsResult?.synced?.length;
+  const lyricsResult = lyricsData !== null && lyricsData !== "none" && lyricsData !== "error" ? lyricsData : null;
   const busy = gen.loading || connecting;
-  const showCompactLyrics = !lyricsFullScreen && hasSyncedLyrics && nowPlaying !== null && !busy;
+  const lyricsPanelState = lyricsPanelStateFor(pb.currentlyPlayingUri, lyricsData);
+  const showCompactLyrics = lyricsMode && !lyricsFullScreen && !busy;
   const fullscreenLyricsActive = lyricsFullScreen && lyricsResult !== null;
 
   const budget: LayoutBudget = layoutBudget(height, {
@@ -227,6 +244,7 @@ export function useMainScreenRender(d: RenderDeps): RenderOut {
     fullscreenLyricsActive,
     lyricsFullScreen,
     showCompactLyrics,
+    lyricsPanelState,
     lyricsResult,
     lyricsCurrentLine,
     interpolatedPosMs,
