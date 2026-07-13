@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Config } from "../config";
-import { getAccessToken } from "../spotify/auth";
-import { SpotifyClient } from "../spotify/client";
-import { createMusicProvider } from "../music/factory";
+import { createMusicProvider, createRemotePlaybackClient } from "../music/factory";
 import { player } from "../music/playback";
 import type { ResolvedPlaylist } from "../core/generate-playlist";
 import type { RemotePlaylist } from "../music/types";
@@ -10,7 +8,10 @@ import type { TrackMeta } from "./useLyrics";
 
 /**
  * Now-playing state, the 1.5s playback poll, volume/mute, and play/pause.
- * Also primes the mpv singleton with the persisted volume once config loads.
+ * All playback goes through the PlayerController facade: an effect keeps a
+ * remote (Spotify) client attached while the backend + auth allow it, so
+ * poll/pause/resume/volume never branch on backend here. The only backend
+ * awareness left is auth gating (Spotify needs a token before anything).
  */
 export function usePlayback(
   config: Config | null,
@@ -55,59 +56,43 @@ export function usePlayback(
     player.setInitialVolume(config.volume);
   }, [config]);
 
-  // Poll current playback state (which track is playing / paused):
-  // spotify — its Web API /me/player; local backends — the mpv-backed player.
+  // Keep the PlayerController's remote half in sync: spotify + token →
+  // attach a Web-API client; anything else → detach so mpv is the route.
+  // This is the single wiring point that makes pause/resume/setVolume/poll
+  // backend-agnostic everywhere below.
+  useEffect(() => {
+    if (!config) return;
+    player.setRemote(deps.authed ? createRemotePlaybackClient(config) : null);
+  }, [config, deps.authed]);
+
+  // Poll current playback state (which track is playing / paused) through
+  // the facade — remote Web API or mpv, PlayerController decides.
   useEffect(() => {
     if (deps.loading || !config) return;
-    const isSpotify = config.musicBackend === "spotify";
-    if (isSpotify && !deps.authed) return;
+    // Auth gate, not a playback branch: polling Spotify without a token
+    // would 401 every 1.5s.
+    if (deps.isSpotifyBackend && !deps.authed) return;
     let cancelled = false;
     const poll = async () => {
       try {
-        if (isSpotify) {
-          const token = await getAccessToken(config);
-          const spotify = new SpotifyClient(token);
-          const state = await spotify.getCurrentlyPlaying();
-          if (cancelled) return;
-          setCurrentlyPlayingUri(state?.uri ?? null);
-          setIsPlaying(state?.isPlaying ?? false);
-          if (typeof state?.volume === "number") setVolume(state.volume);
-          setTrackPos(
-            state
-              ? { positionMs: state.progressMs ?? 0, durationMs: state.durationMs ?? null }
-              : null,
-          );
-          lyricsAnchorRef.current = state
-            ? { positionMs: state.progressMs ?? 0, wallClock: Date.now(), isPlaying: state.isPlaying ?? false }
-            : null;
-          if (state?.uri) {
-            setCurrentTrackMeta({
-              uri: state.uri,
-              artist: state.trackArtist ?? "",
-              title: state.trackTitle ?? "",
-              durationMs: state.durationMs ?? 0,
-            });
-          }
-        } else {
-          const state = await player.getCurrentlyPlaying();
-          if (cancelled) return;
-          setCurrentlyPlayingUri(state?.track?.uri ?? null);
-          setIsPlaying(state?.isPlaying ?? false);
-          if (typeof state?.volume === "number") setVolume(state.volume);
-          setTrackPos(
-            state ? { positionMs: state.positionMs, durationMs: state.durationMs } : null,
-          );
-          lyricsAnchorRef.current = state
-            ? { positionMs: state.positionMs, wallClock: Date.now(), isPlaying: state.isPlaying }
-            : null;
-          if (state?.track) {
-            setCurrentTrackMeta({
-              uri: state.track.uri,
-              artist: state.track.artist ?? "",
-              title: state.track.title ?? "",
-              durationMs: state.track.durationMs ?? 0,
-            });
-          }
+        const state = await player.getCurrentlyPlaying();
+        if (cancelled) return;
+        setCurrentlyPlayingUri(state?.track?.uri ?? null);
+        setIsPlaying(state?.isPlaying ?? false);
+        if (typeof state?.volume === "number") setVolume(state.volume);
+        setTrackPos(
+          state ? { positionMs: state.positionMs, durationMs: state.durationMs } : null,
+        );
+        lyricsAnchorRef.current = state
+          ? { positionMs: state.positionMs, wallClock: Date.now(), isPlaying: state.isPlaying }
+          : null;
+        if (state?.track) {
+          setCurrentTrackMeta({
+            uri: state.track.uri,
+            artist: state.track.artist ?? "",
+            title: state.track.title ?? "",
+            durationMs: state.track.durationMs ?? 0,
+          });
         }
       } catch {
         // ignore polling errors
@@ -121,21 +106,16 @@ export function usePlayback(
     };
   }, [deps.authed, deps.loading, config]);
 
-  // Push a new volume to the active backend and persist it. Spotify routes
-  // through its Web API; local backends go through the mpv singleton. The
-  // polling effect keeps `volume` in sync if the backend changes it on its
-  // side (e.g. another Spotify client).
+  // Push a new volume to the active backend and persist it. The facade
+  // routes to the remote client or mpv; the polling effect keeps `volume`
+  // in sync if the backend changes it on its side (e.g. another Spotify
+  // client).
   async function applyVolume(pct: number) {
     const clamped = Math.max(0, Math.min(100, Math.round(pct)));
     setVolume(clamped);
     await deps.saveVolume(clamped);
     try {
-      if (deps.isSpotifyBackend && deps.authedRef.current && config) {
-        const token = await getAccessToken(config);
-        await new SpotifyClient(token).setVolume(clamped);
-      } else {
-        await player.setVolume(clamped);
-      }
+      await player.setVolume(clamped);
     } catch (e) {
       deps.setError(String(e instanceof Error ? e.message : e));
     }
@@ -165,14 +145,23 @@ export function usePlayback(
 
   async function handlePlay() {
     if (!config) return;
-    // Local backends: play through mpv, queueing the rest of the list so
-    // playback continues past the selected track.
-    if (!deps.isSpotifyBackend) {
+    if (deps.isSpotifyBackend) {
+      if (!deps.authedRef.current) {
+        deps.onNeedsConnect();
+        return;
+      }
+      // Selected track plays directly (works before any playlist is
+      // committed); fall back to the committed playlist context when
+      // nothing is selected.
       const track = deps.resolved?.resolved[deps.selectedIndex];
-      if (!track) return;
+      const target = track?.uri ?? deps.committedPlaylist?.uri;
+      if (!target) return;
       try {
+        // Re-check live state (the 1.5s poll can be stale): pressing enter
+        // on the track that's already playing pauses it instead of
+        // restarting it.
         const state = await player.getCurrentlyPlaying();
-        if (state?.track?.uri === track.uri) {
+        if (state?.track?.uri === target) {
           if (state.isPlaying) {
             await player.pause();
             setIsPlaying(false);
@@ -182,42 +171,35 @@ export function usePlayback(
           }
           return;
         }
-        const music = await createMusicProvider(config);
-        await player.queue(deps.resolved!.resolved.slice(deps.selectedIndex), music);
-        setCurrentlyPlayingUri(track.uri);
+        await player.playRemote(
+          track ?? { uri: target, artist: "", title: deps.committedPlaylist?.name ?? "" },
+        );
+        setCurrentlyPlayingUri(target);
         setIsPlaying(true);
       } catch (e) {
         deps.setError(String(e instanceof Error ? e.message : e));
       }
       return;
     }
-    if (!deps.authedRef.current) {
-      deps.onNeedsConnect();
-      return;
-    }
-    // Selected track plays directly (works before any playlist is committed);
-    // fall back to the committed playlist context when nothing is selected.
+    // Local backends: play through mpv, queueing the rest of the list so
+    // playback continues past the selected track.
     const track = deps.resolved?.resolved[deps.selectedIndex];
-    const target = track?.uri ?? deps.committedPlaylist?.uri;
-    if (!target) return;
+    if (!track) return;
     try {
-      const token = await getAccessToken(config);
-      const spotify = new SpotifyClient(token);
-      // Re-check live state (the 1.5s poll can be stale): pressing enter on the
-      // track that's already playing pauses it instead of restarting it.
-      const state = await spotify.getCurrentlyPlaying();
-      if (state?.uri === target) {
+      const state = await player.getCurrentlyPlaying();
+      if (state?.track?.uri === track.uri) {
         if (state.isPlaying) {
-          await spotify.pause();
+          await player.pause();
           setIsPlaying(false);
         } else {
-          await spotify.resume();
+          await player.resume();
           setIsPlaying(true);
         }
         return;
       }
-      await spotify.play(target);
-      setCurrentlyPlayingUri(target);
+      const music = await createMusicProvider(config);
+      await player.queue(deps.resolved!.resolved.slice(deps.selectedIndex), music);
+      setCurrentlyPlayingUri(track.uri);
       setIsPlaying(true);
     } catch (e) {
       deps.setError(String(e instanceof Error ? e.message : e));
