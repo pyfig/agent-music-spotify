@@ -1,5 +1,5 @@
 import type { Progress } from "../core/generate-playlist";
-import { barParts, SPINNER, THINKING_SPINNER, theme, truncateLabel } from "./theme";
+import { barParts, SPINNER, THINKING_VERBS, theme, truncateLabel } from "./theme";
 
 interface StatusBarProps {
   model: string;
@@ -8,7 +8,6 @@ interface StatusBarProps {
   loading: boolean;
   error?: string;
   progress?: Progress | null;
-  tokenCount?: number;
   spinnerFrame?: number;
   elapsed?: number;
   cancelHint?: boolean;
@@ -51,12 +50,11 @@ export function modelMax(width: number | undefined, backend: string, excludedCou
   return Math.max(MODEL_MIN, Math.min(MODEL_MAX, width - prefix - excluded - right));
 }
 
-// Thinking and clarifying are both LLM reasoning — they get the musical
-// frames so the reasoning phase reads differently from resolve/create
-// progress. Exported for tests.
-export function spinnerGlyph(phase: Progress["phase"], frame: number): string {
-  const frames = phase === "thinking" || phase === "clarifying" ? THINKING_SPINNER : SPINNER;
-  return frames[frame % frames.length]!;
+// Rotates every 3s so long reasoning stretches visibly progress — per-tick
+// rotation would strobe. Derived from the shared elapsed counter: no extra
+// timer or state. Exported for tests.
+export function thinkingVerb(elapsed: number): string {
+  return THINKING_VERBS[Math.floor(elapsed / 3) % THINKING_VERBS.length]!;
 }
 
 function progressBar(current: number, total: number): string {
@@ -64,12 +62,11 @@ function progressBar(current: number, total: number): string {
   return filled + rest;
 }
 
-function progressLabel(progress: Progress, tokenCount: number): string {
+export function progressLabel(progress: Progress, elapsed: number): string {
   switch (progress.phase) {
     case "clarifying":
-      return "clarifying…";
     case "thinking":
-      return `thinking ${tokenCount > 0 ? `n=${tokenCount}` : "…"}`;
+      return thinkingVerb(elapsed);
     case "tool": {
       const name = progress.toolName ?? "";
       return name.length > 0 ? `tool: ${name}` : "tool…";
@@ -95,7 +92,6 @@ export function StatusBar({
   loading,
   error,
   progress,
-  tokenCount = 0,
   spinnerFrame = 0,
   elapsed = 0,
   cancelHint = false,
@@ -134,7 +130,7 @@ export function StatusBar({
           {/* Right: spinner + thinking/vol — keeps its width so it never clips. */}
           <box style={{ flexDirection: "row", flexShrink: 0, flexGrow: 1, justifyContent: "flex-end" }}>
             <text fg={theme.accent}>
-              {spinnerGlyph(progress.phase, spinnerFrame)} {progressLabel(progress, tokenCount)}
+              {SPINNER[spinnerFrame % SPINNER.length]} {progressLabel(progress, elapsed)}
               {" · "}
               {elapsed}s
             </text>

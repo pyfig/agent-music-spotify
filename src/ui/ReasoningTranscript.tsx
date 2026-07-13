@@ -2,7 +2,7 @@ import { useRef } from "react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import type { AgentEvent } from "../agent/types";
 import { countTools, toLines, type LineSegment } from "./reasoning";
-import { THINKING_SPINNER, theme } from "./theme";
+import { SPINNER, theme } from "./theme";
 
 interface ReasoningTranscriptProps {
   /** Ordered reasoning/tool events, coalesced by the app reducer. */
@@ -60,7 +60,7 @@ export function ReasoningTranscript({ events, collapsed, spinnerFrame = 0, scrol
       <box style={{ flexDirection: "row", flexShrink: 0 }}>
         {/* Phase/tool status lives in StatusBar only — this header is just the
             agent identity glyph, not a second status line. */}
-        <text fg={theme.accent}> {THINKING_SPINNER[spinnerFrame % THINKING_SPINNER.length]} music-agent</text>
+        <text fg={theme.accent}> {SPINNER[spinnerFrame % SPINNER.length]} music-agent</text>
       </box>
       <scrollbox
         ref={scrollRef}

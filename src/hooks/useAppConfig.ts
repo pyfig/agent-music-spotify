@@ -49,6 +49,28 @@ export function useAppConfig(deps: {
     await saveAndSet(partial);
   }
 
+  /** First-run wizard handoff: persist choices, optionally request Spotify connect. */
+  async function finishWizard(
+    r: {
+      provider: string;
+      musicBackend: Config["musicBackend"];
+      soundcloudClientId?: string;
+      ollamaModel?: string;
+      claudeModel?: string;
+    },
+    opts: { needSpotifyConnect: boolean; onNeedConnect: () => void },
+  ) {
+    await saveAndSet({
+      defaultProvider: r.provider,
+      musicBackend: r.musicBackend,
+      ...(r.soundcloudClientId ? { soundcloudClientId: r.soundcloudClientId } : {}),
+      ...(r.ollamaModel ? { ollamaModel: r.ollamaModel } : {}),
+      ...(r.claudeModel ? { claudeModel: r.claudeModel } : {}),
+    });
+    if (opts.needSpotifyConnect) opts.onNeedConnect();
+    setScreen("main");
+  }
+
   return {
     config,
     setConfig,
@@ -58,5 +80,6 @@ export function useAppConfig(deps: {
     setOllamaModels,
     saveAndSet,
     onSaveField,
+    finishWizard,
   };
 }
