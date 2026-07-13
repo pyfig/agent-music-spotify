@@ -76,6 +76,11 @@ import { Logo } from "./ui/Logo";
 import { theme, truncateLabel } from "./ui/theme";
 import { fmtTime, trackBar } from "./ui/format";
 import { useToast } from "./hooks/useToast";
+import {
+  blocksPromptFocus,
+  replacesMainRegion,
+  type OverlayState,
+} from "./app/overlay";
 import { layoutBudget, LYRICS_PANEL_ROWS } from "./ui/layout";
 import { LyricsPanel } from "./ui/LyricsPanel";
 import { LyricsScreen } from "./ui/LyricsScreen";
@@ -89,16 +94,9 @@ export function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [screen, setScreen] = useState<Screen>("loading");
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [backendPickerOpen, setBackendPickerOpen] = useState(false);
-  const [effortPickerOpen, setEffortPickerOpen] = useState(false);
-  const [clientIdOpen, setClientIdOpen] = useState(false);
-  const [clientIdText, setClientIdText] = useState("");
-  const [clientIdError, setClientIdError] = useState<string | undefined>(
-    undefined,
-  );
-  const [systemPromptOpen, setSystemPromptOpen] = useState(false);
-  const [systemPromptText, setSystemPromptText] = useState("");
+  /** The single active modal overlay — opening one structurally replaces any
+   * other (see src/app/overlay.ts). */
+  const [overlay, setOverlay] = useState<OverlayState>(null);
   const [input, setInput] = useState("");
   const [authed, setAuthed] = useState(false);
   const authedRef = useRef(false);
@@ -122,10 +120,8 @@ export function App() {
   const [slashIndex, setSlashIndex] = useState(0);
   const [hasInteracted, setHasInteracted] = useState(false);
   const [connecting, setConnecting] = useState(false);
-  const [confirmConnect, setConfirmConnect] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
-  const [tokenCount, setTokenCount] = useState(0);
   const [startTime, setStartTime] = useState<number | null>(null);
   const [spinnerFrame, setSpinnerFrame] = useState(0);
   const [elapsed, setElapsed] = useState(0);
@@ -141,8 +137,6 @@ export function App() {
   const [volume, setVolume] = useState<number | null>(null);
   // Mute state: mutedVolume holds the pre-mute level so a second M restores it.
   const [mutedVolume, setMutedVolume] = useState<number | null>(null);
-  const [memoryText, setMemoryText] = useState<string | null>(null);
-  const [forgetOpen, setForgetOpen] = useState(false);
   /** Ordered reasoning/tool transcript, rendered as a chat-style thinking log. */
   const [events, setEvents] = useState<AgentEvent[]>([]);
   // Mirror of `events` readable from runResolve's closure (state var is stale
@@ -208,7 +202,7 @@ export function App() {
       // Spotify auth only matters for the spotify backend; local backends
       // need external binaries instead.
       if (c.musicBackend === "spotify") {
-        if (!a) setConfirmConnect(true);
+        if (!a) setOverlay({ kind: "connect-confirm" });
       } else {
         const depError = checkLocalPlaybackDeps(c.musicBackend);
         if (depError) setError(depError);
@@ -299,11 +293,7 @@ export function App() {
   );
   const slashMenuOpen =
     screen === "main" &&
-    !pickerOpen &&
-    !backendPickerOpen &&
-    !clientIdOpen &&
-    !effortPickerOpen &&
-    !systemPromptOpen &&
+    !replacesMainRegion(overlay) &&
     historyEntries === null &&
     slashCommands.length > 0;
 
@@ -351,38 +341,38 @@ export function App() {
   useKeyboard(async (key) => {
     if (key.ctrl && key.name === "c") process.exit(0);
     if (screen !== "main") return;
-    if (confirmConnect) {
+    if (overlay?.kind === "connect-confirm") {
       if (key.name === "y") {
         const resume = pendingPrompt;
-        setConfirmConnect(false);
+        setOverlay(null);
         setPendingPrompt(null);
         await runLoginAndResume(resume);
         return;
       }
       if (key.name === "n" || key.name === "escape") {
-        setConfirmConnect(false);
+        setOverlay(null);
         setPendingPrompt(null);
         return;
       }
       return;
     }
-    if (forgetOpen) {
+    if (overlay?.kind === "forget-confirm") {
       if (key.name === "r") {
         const taste = await loadTaste();
         await saveTaste({ ...taste, sessions: [] });
-        setForgetOpen(false);
+        setOverlay(null);
         return;
       }
       if (key.name === "a") {
         await saveTaste(emptyTaste());
-        setForgetOpen(false);
+        setOverlay(null);
         return;
       }
-      if (key.name === "escape" || key.name === "n") setForgetOpen(false);
+      if (key.name === "escape" || key.name === "n") setOverlay(null);
       return;
     }
-    if (memoryText !== null) {
-      if (key.name === "escape") setMemoryText(null);
+    if (overlay?.kind === "memory") {
+      if (key.name === "escape") setOverlay(null);
       return;
     }
     if (historyEntries !== null) {
@@ -430,33 +420,26 @@ export function App() {
       if (key.name === "escape") cancelResult();
       return;
     }
-    if (clientIdOpen) {
-      if (key.name === "escape") {
-        setClientIdOpen(false);
-        setClientIdText("");
-        setClientIdError(undefined);
-      }
+    if (overlay?.kind === "client-id") {
+      if (key.name === "escape") setOverlay(null);
       if (key.ctrl && key.name === "o") {
         void openBrowser("https://developer.spotify.com/dashboard");
       }
       return;
     }
-    if (effortPickerOpen) {
-      if (key.name === "escape") setEffortPickerOpen(false);
+    if (overlay?.kind === "effort-picker") {
+      if (key.name === "escape") setOverlay(null);
       return;
     }
-    if (systemPromptOpen) {
-      if (key.name === "escape") {
-        setSystemPromptOpen(false);
-        setSystemPromptText("");
-      }
+    if (overlay?.kind === "system-prompt") {
+      if (key.name === "escape") setOverlay(null);
       return;
     }
-    if (backendPickerOpen) {
-      if (key.name === "escape") setBackendPickerOpen(false);
+    if (overlay?.kind === "backend-picker") {
+      if (key.name === "escape") setOverlay(null);
       return;
     }
-    if (pickerOpen) {
+    if (overlay?.kind === "model-picker") {
       // ModelPicker owns its own keyboard (Esc navigates its 3 levels); App
       // must not also react. Ctrl+C above still works.
       return;
@@ -512,7 +495,7 @@ export function App() {
       return;
     }
     if (key.ctrl && key.name === "b") {
-      setBackendPickerOpen(true);
+      setOverlay({ kind: "backend-picker" });
       return;
     }
     if (key.ctrl && key.name === "p") {
@@ -611,9 +594,7 @@ export function App() {
     if (!cfg || connectingRef.current) return;
     if (!isValidClientId(cfg.spotifyClientId)) {
       setPendingPrompt(resumePrompt);
-      setClientIdText("");
-      setClientIdError(undefined);
-      setClientIdOpen(true);
+      setOverlay({ kind: "client-id", text: "" });
       return;
     }
     connectingRef.current = true;
@@ -650,14 +631,16 @@ export function App() {
   async function handleClientIdSubmit(value: string) {
     const id = value.trim();
     if (!isValidClientId(id)) {
-      setClientIdError("invalid — expected 32 hex characters");
+      setOverlay((o) =>
+        o?.kind === "client-id"
+          ? { ...o, error: "invalid — expected 32 hex characters" }
+          : o,
+      );
       return;
     }
     const next = await saveConfig({ spotifyClientId: id });
     setConfig(next);
-    setClientIdOpen(false);
-    setClientIdText("");
-    setClientIdError(undefined);
+    setOverlay(null);
     const resume = pendingPrompt;
     setPendingPrompt(null);
     await runLoginAndResume(resume, next);
@@ -673,7 +656,7 @@ export function App() {
         : { ollamaModel: config?.ollamaModel }),
     });
     setConfig(next);
-    setPickerOpen(false);
+    setOverlay(null);
   }
 
   // /model: commit defaultProvider + close the picker (the "▶ use" action).
@@ -712,7 +695,7 @@ export function App() {
     }
     const next = await saveConfig({ defaultProvider: provider });
     setConfig(next);
-    if (opts?.closePicker ?? true) setPickerOpen(false);
+    if (opts?.closePicker ?? true) setOverlay(null);
     return null;
   }
 
@@ -781,20 +764,20 @@ export function App() {
     setSelectedIndex(0);
     const next = await saveConfig({ musicBackend: backend });
     setConfig(next);
-    setBackendPickerOpen(false);
+    setOverlay(null);
     setError(checkLocalPlaybackDeps(backend) ?? undefined);
   }
 
   async function applyEffortChoice(effort: string) {
     const next = await saveConfig({ claudeEffort: effort });
     setConfig(next);
-    setEffortPickerOpen(false);
+    setOverlay(null);
   }
 
   async function applySystemPrompt(value: string) {
     const next = await saveConfig({ customSystemPrompt: value });
     setConfig(next);
-    setSystemPromptOpen(false);
+    setOverlay(null);
   }
 
   async function runResolve(
@@ -805,7 +788,6 @@ export function App() {
     setError(undefined);
     setLoading(true);
     setProgress(null);
-    setTokenCount(0);
     setElapsed(0);
     setStartTime(Date.now());
     setEvents([]);
@@ -844,12 +826,7 @@ export function App() {
         prompt,
         qa,
         {
-          onProgress: (p) => {
-            setProgress(p);
-            // Retry after parse-fail restarts the token stream; count only the live attempt.
-            if (p.phase === "thinking") setTokenCount(0);
-          },
-          onToken: (delta) => setTokenCount((n) => n + delta.length),
+          onProgress: (p) => setProgress(p),
           onEvent: (e) =>
             setEvents((prev) => {
               const next = reduceEvents(prev, e);
@@ -1097,12 +1074,12 @@ export function App() {
     if (trimmed === "/model") {
       setInput("");
       setOllamaModels(await listOllamaModels(config!.ollamaUrl));
-      setPickerOpen(true);
+      setOverlay({ kind: "model-picker" });
       return;
     }
     if (trimmed === "/music") {
       setInput("");
-      setBackendPickerOpen(true);
+      setOverlay({ kind: "backend-picker" });
       return;
     }
     if (trimmed === "/login") {
@@ -1112,9 +1089,7 @@ export function App() {
     }
     if (trimmed === "/clientid") {
       setInput("");
-      setClientIdText("");
-      setClientIdError(undefined);
-      setClientIdOpen(true);
+      setOverlay({ kind: "client-id", text: "" });
       return;
     }
     if (trimmed === "/effort") {
@@ -1123,13 +1098,12 @@ export function App() {
         setError("effort only applies to the Claude provider");
         return;
       }
-      setEffortPickerOpen(true);
+      setOverlay({ kind: "effort-picker" });
       return;
     }
     if (trimmed === "/systemprompt") {
       setInput("");
-      setSystemPromptText(config?.customSystemPrompt ?? "");
-      setSystemPromptOpen(true);
+      setOverlay({ kind: "system-prompt", text: config?.customSystemPrompt ?? "" });
       return;
     }
     if (trimmed === "/save") {
@@ -1205,17 +1179,18 @@ export function App() {
       setInput("");
       const taste = await loadTaste();
       if (taste.preferences.length === 0 && taste.sessions.length === 0) {
-        setMemoryText("taste memory is empty — /like tracks or generate playlists");
+        setOverlay({ kind: "memory", text: "taste memory is empty — /like tracks or generate playlists" });
         return;
       }
       const last = taste.sessions.at(-1);
-      setMemoryText(
-        [
+      setOverlay({
+        kind: "memory",
+        text: [
           "Preferences:",
           ...(taste.preferences.length ? taste.preferences : ["- (none yet)"]),
           ...(last ? ["", `Last session (${last.header}):`, ...last.lines] : []),
         ].join("\n"),
-      );
+      });
       return;
     }
     if (trimmed === "/lyrics") {
@@ -1246,7 +1221,7 @@ export function App() {
     }
     if (trimmed === "/forget") {
       setInput("");
-      setForgetOpen(true);
+      setOverlay({ kind: "forget-confirm" });
       return;
     }
     if (trimmed === "/quit") process.exit(0);
@@ -1258,7 +1233,7 @@ export function App() {
       }
       if (isSpotifyBackend && !authedRef.current) {
         setPendingPrompt("__random__");
-        setConfirmConnect(true);
+        setOverlay({ kind: "connect-confirm" });
         return;
       }
       setHasInteracted(true);
@@ -1280,7 +1255,7 @@ export function App() {
     if (!config || !provider || loading) return;
     if (isSpotifyBackend && !authedRef.current) {
       setPendingPrompt(trimmed);
-      setConfirmConnect(true);
+      setOverlay({ kind: "connect-confirm" });
       return;
     }
     setHasInteracted(true);
@@ -1323,7 +1298,7 @@ export function App() {
       return;
     }
     if (!authedRef.current) {
-      setConfirmConnect(true);
+      setOverlay({ kind: "connect-confirm" });
       return;
     }
     // Selected track plays directly (works before any playlist is committed);
@@ -1361,19 +1336,12 @@ export function App() {
   const centered =
     screen === "main" &&
     !hasInteracted &&
-    !pickerOpen &&
-    !backendPickerOpen &&
-    !clientIdOpen &&
-    !effortPickerOpen &&
-    !systemPromptOpen &&
+    !replacesMainRegion(overlay) &&
     historyEntries === null;
   // Clarify Q&A gets the same centered treatment as the initial prompt.
   const clarifyActive =
     screen === "main" &&
-    !pickerOpen &&
-    !backendPickerOpen &&
-    !effortPickerOpen &&
-    !systemPromptOpen &&
+    !replacesMainRegion(overlay) &&
     clarifyQuestions !== null;
 
   const playingTrackIndex = resolved?.resolved.findIndex((t) => t.uri === currentlyPlayingUri) ?? -1;
@@ -1413,13 +1381,7 @@ export function App() {
           setSlashIndex(0);
         }}
         onSubmit={handleSubmit}
-        focused={
-          !confirmConnect &&
-          !awaitingConfirm &&
-          !clientIdOpen &&
-          !effortPickerOpen &&
-          !systemPromptOpen
-        }
+        focused={!blocksPromptFocus(overlay) && !awaitingConfirm}
       />
       {slashMenuOpen && (
         <SlashMenu
@@ -1429,20 +1391,20 @@ export function App() {
           width={columnWidth}
         />
       )}
-      {confirmConnect && <ConnectPrompt pendingPrompt={pendingPrompt} />}
-      {memoryText !== null && (
+      {overlay?.kind === "connect-confirm" && <ConnectPrompt pendingPrompt={pendingPrompt} />}
+      {overlay?.kind === "memory" && (
         <box
           title="taste memory (esc to close)"
           style={{ border: true, borderColor: theme.muted, flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}
         >
-          {memoryText.split("\n").map((line, i) => (
+          {overlay.text.split("\n").map((line, i) => (
             <text key={`m${i}`} fg={line.endsWith(":") ? theme.accent : theme.fg}>
               {line}
             </text>
           ))}
         </box>
       )}
-      {forgetOpen && (
+      {overlay?.kind === "forget-confirm" && (
         <box
           title="forget taste memory"
           style={{ border: true, borderColor: theme.maroon, flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}
@@ -1484,24 +1446,24 @@ export function App() {
                 ...(r.claudeModel ? { claudeModel: r.claudeModel } : {}),
               });
               setConfig(next);
-              if (r.musicBackend === "spotify" && !authedRef.current) setConfirmConnect(true);
+              if (r.musicBackend === "spotify" && !authedRef.current) setOverlay({ kind: "connect-confirm" });
               setScreen("main");
             }}
           />
         )}
 
-        {screen === "main" && pickerOpen && config && (
+        {screen === "main" && overlay?.kind === "model-picker" && config && (
           <ModelPicker
             ollamaModels={ollamaModels}
             config={config}
             focused
             onUseProvider={onUseProvider}
             onSaveField={onSaveField}
-            onClose={() => setPickerOpen(false)}
+            onClose={() => setOverlay(null)}
           />
         )}
 
-        {screen === "main" && backendPickerOpen && config && (
+        {screen === "main" && overlay?.kind === "backend-picker" && config && (
           <MusicBackendPicker
             focused
             current={config.musicBackend}
@@ -1509,7 +1471,7 @@ export function App() {
           />
         )}
 
-        {screen === "main" && effortPickerOpen && config && (
+        {screen === "main" && overlay?.kind === "effort-picker" && config && (
           <EffortPicker
             focused
             current={config.claudeEffort}
@@ -1517,24 +1479,27 @@ export function App() {
           />
         )}
 
-        {screen === "main" && systemPromptOpen && config && (
+        {screen === "main" && overlay?.kind === "system-prompt" && config && (
           <SystemPromptPrompt
-            value={systemPromptText}
-            onChange={setSystemPromptText}
+            value={overlay.text}
+            onChange={(v) =>
+              setOverlay((o) => (o?.kind === "system-prompt" ? { ...o, text: v } : o))
+            }
             onSubmit={applySystemPrompt}
             focused
           />
         )}
 
-        {screen === "main" && clientIdOpen && config && (
+        {screen === "main" && overlay?.kind === "client-id" && config && (
           <ClientIdPrompt
-            value={clientIdText}
-            onChange={(v) => {
-              setClientIdText(v);
-              setClientIdError(undefined);
-            }}
+            value={overlay.text}
+            onChange={(v) =>
+              setOverlay((o) =>
+                o?.kind === "client-id" ? { kind: "client-id", text: v } : o,
+              )
+            }
             onSubmit={handleClientIdSubmit}
-            error={clientIdError}
+            error={overlay.error}
             focused
             currentId={config.spotifyClientId}
             isDefault={config.spotifyClientId === DEFAULT_CLIENT_ID}
@@ -1568,7 +1533,7 @@ export function App() {
           </>
         )}
 
-        {screen === "main" && !pickerOpen && clarifyQuestions !== null && (
+        {screen === "main" && overlay?.kind !== "model-picker" && clarifyQuestions !== null && (
           <ClarifyPrompt
             questionText={clarifyQuestions[clarifyStepIndex]!.text}
             options={clarifyQuestions[clarifyStepIndex]!.options}
@@ -1586,11 +1551,7 @@ export function App() {
         )}
 
         {screen === "main" &&
-          !pickerOpen &&
-          !backendPickerOpen &&
-          !clientIdOpen &&
-          !effortPickerOpen &&
-          !systemPromptOpen &&
+          !replacesMainRegion(overlay) &&
           historyEntries === null &&
           clarifyQuestions === null && (
             <>
@@ -1679,7 +1640,6 @@ export function App() {
                 loading={loading || connecting}
                 error={error}
                 progress={progress}
-                tokenCount={tokenCount}
                 spinnerFrame={spinnerFrame}
                 elapsed={elapsed}
                 cancelHint={escArmed}
