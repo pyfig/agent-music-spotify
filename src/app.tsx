@@ -73,7 +73,9 @@ import {
 import { copyToClipboard } from "./core/clipboard";
 import { ConfirmActions, type ConfirmAction } from "./ui/ConfirmActions";
 import { Logo } from "./ui/Logo";
-import { barParts, theme, truncateLabel } from "./ui/theme";
+import { theme, truncateLabel } from "./ui/theme";
+import { fmtTime, trackBar } from "./ui/format";
+import { useToast } from "./hooks/useToast";
 import { layoutBudget, LYRICS_PANEL_ROWS } from "./ui/layout";
 import { LyricsPanel } from "./ui/LyricsPanel";
 import { LyricsScreen } from "./ui/LyricsScreen";
@@ -81,24 +83,6 @@ import { reduceEvents } from "./ui/reasoning";
 import type { ScrollBoxRenderable } from "@opentui/core";
 
 type Screen = "loading" | "wizard" | "main";
-
-/** mm:ss (or h:mm:ss past an hour) for track times. */
-function fmtTime(ms: number): string {
-  const totalSec = Math.max(0, Math.floor(ms / 1000));
-  const s = totalSec % 60;
-  const m = Math.floor(totalSec / 60) % 60;
-  const h = Math.floor(totalSec / 3600);
-  const mmss = `${m}:${String(s).padStart(2, "0")}`;
-  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : mmss;
-}
-
-const TRACK_BAR_WIDTH = 20;
-
-/** Same ━─ glyphs as the volume bar so both bars read as one system. */
-function trackBar(positionMs: number, durationMs: number): { filled: string; rest: string } {
-  const ratio = durationMs > 0 ? positionMs / durationMs : 0;
-  return barParts(ratio, TRACK_BAR_WIDTH);
-}
 
 export function App() {
   const { width, height } = useTerminalDimensions();
@@ -173,7 +157,7 @@ export function App() {
    * clarify, the loop awaits this promise; we resolve it from `advanceClarify`
    * once the user picks an option / submits a custom answer. */
   const clarifyResolverRef = useRef<((answer: string) => void) | null>(null);
-  const [toast, setToast] = useState<{ msg: string; ts: number } | null>(null);
+  const { toast, show } = useToast();
   // Live handle on the reasoning-transcript scrollbox so Up/Down can scroll
   // it while the agent is still generating and the resolved-track list hasn't
   // taken over the screen (see useKeyboard below).
@@ -186,14 +170,6 @@ export function App() {
   const lyricsAnchorRef = useRef<{ positionMs: number; wallClock: number; isPlaying: boolean } | null>(null);
   /** Current track metadata for lyrics lookup — updated on each poll. */
   const [currentTrackMeta, setCurrentTrackMeta] = useState<TrackMeta>({ uri: null, artist: "", title: "", durationMs: 0 });
-  function show(msg: string) {
-    setToast({ msg, ts: Date.now() });
-  }
-  useEffect(() => {
-    if (!toast) return;
-    const id = setTimeout(() => setToast(null), 3500);
-    return () => clearTimeout(id);
-  }, [toast]);
   // Taste sessions group by generation; /like lands in the latest one.
   const sessionHeaderRef = useRef<string>(new Date().toISOString().slice(0, 16));
   // Soft seed context: the previous session's resolved playlist (as
