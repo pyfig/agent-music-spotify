@@ -40,6 +40,9 @@ export interface RemotePlaybackClient {
     volume?: number | null;
     progressMs?: number | null;
     durationMs?: number | null;
+    /** Item metadata so externally started tracks still show artist/title. */
+    trackTitle?: string;
+    trackArtist?: string;
   } | null>;
   setVolume?(percent: number): Promise<void>;
 }
@@ -159,8 +162,11 @@ async function spawnMpv(sock: string): Promise<MpvHandle> {
 
 /**
  * Single playback facade for the app. Local backends (SoundCloud, YTM) play
- * through one mpv process driven over JSON IPC; Spotify delegates to its
- * remote Web API client. app.tsx never branches on backend itself.
+ * through one mpv process driven over JSON IPC; Spotify delegates to the
+ * remote Web API client attached via setRemote() (usePlayback keeps it in
+ * sync with backend + auth state). Playback commands and the poll never
+ * branch on backend outside this class — the app shell only checks
+ * hasRemote() and auth.
  */
 export class PlayerController {
   private mpv: MpvHandle | null = null;
@@ -182,6 +188,11 @@ export class PlayerController {
   /** Route play/pause/resume to a remote (Spotify) client instead of mpv. */
   setRemote(client: RemotePlaybackClient | null): void {
     this.remote = client;
+  }
+
+  /** Remote client attached (spotify backend + valid token). */
+  hasRemote(): boolean {
+    return this.remote !== null;
   }
 
   /** Set the desired volume before mpv starts; applied on ensureMpv(). */
@@ -295,8 +306,18 @@ export class PlayerController {
       const state = await this.remote.getCurrentlyPlaying();
       if (!state) return null;
       if (typeof state.volume === "number") this.volume = clampVolume(state.volume);
+      // Prefer the service's item metadata: playback may have been started
+      // from another client, in which case remoteTrack is stale or null.
+      const track: Track | null = state.uri
+        ? {
+            uri: state.uri,
+            artist: state.trackArtist ?? this.remoteTrack?.artist ?? "",
+            title: state.trackTitle ?? this.remoteTrack?.title ?? "",
+            durationMs: state.durationMs ?? this.remoteTrack?.durationMs,
+          }
+        : null;
       return {
-        track: this.remoteTrack,
+        track,
         isPlaying: state.isPlaying,
         positionMs: state.progressMs ?? 0,
         durationMs: state.durationMs ?? this.remoteTrack?.durationMs ?? null,

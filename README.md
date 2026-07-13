@@ -9,9 +9,10 @@ Terminal UI (Bun + [@opentui/react](https://github.com/anomalyco/opentui)) that 
 - **Three music backends:** Spotify (remote playlists + Spotify Connect playback), SoundCloud and YouTube Music (local playback via mpv). Switch with **Ctrl+B**.
 - **Six agent providers:** Claude CLI, Ollama, OpenAI, OpenRouter, opencode Zen/Go. Cycle with **Ctrl+P**, configure in-app with `/model`.
 - **Taste memory & history:** `/like`d tracks and past sessions bias future playlists; `/history` replays any earlier session against the current backend.
+- **Synced lyrics:** `/lyrics` shows time-synced lyrics from [LRCLIB](https://lrclib.net) for the playing track — compact panel or full-screen karaoke view, on every backend.
 - **Zero-setup Spotify auth:** built-in client ID + PKCE flow, browser consent on first run, tokens cached and auto-refreshed.
 
-**Contents:** [Install](#install) · [Spotify setup](#spotify-setup) · [Usage](#usage) · [Backends](#multiple-backends) · [History](#session-history) · [Taste memory](#taste-memory) · [Agent loop](#agent-loop) · [Config](#config) · [Run from source](#run-from-source)
+**Contents:** [Install](#install) · [Spotify setup](#spotify-setup) · [Usage](#usage) · [Backends](#multiple-backends) · [Lyrics](#lyrics) · [History](#session-history) · [Taste memory](#taste-memory) · [Agent loop](#agent-loop) · [Config](#config) · [Run from source](#run-from-source)
 
 ## Install
 
@@ -56,6 +57,7 @@ The built-in client ID is shared and its API quota can run out (you'll see a `42
   - `/random` — let the model pick a genre
   - `/save` — save the current track list as a playlist
   - `/history` — browse past sessions: reasoning transcript + load tracks for playback
+  - `/lyrics` — realtime synced lyrics: first run opens the compact panel, second expands to full-screen karaoke view, third turns it off (**Esc** also closes full-screen)
   - `/clear` — clear session (results + context + playback)
   - `/clientid` — set your own Spotify app client ID
   - `/login` — reconnect Spotify
@@ -83,6 +85,12 @@ Switch with **Ctrl+B** or `MUSIC_BACKEND` env / `musicBackend` config key.
 | Requirements | Spotify app client ID + OAuth | `mpv` (client_id auto-scraped, or `SOUNDCLOUD_CLIENT_ID`) | `mpv` + `yt-dlp` |
 
 Backends without remote playlists queue the resolved track list into the local mpv player instead ("Add" plays the whole list; **Enter** plays from the selected track).
+
+## Lyrics
+
+`/lyrics` toggles realtime lyrics for the playing track, fetched from the free [LRCLIB](https://lrclib.net) API. Run it once for a compact 5-row panel above the status bar; run it again for a full-screen view with the current line karaoke-centered; a third run (or **Esc** in full-screen) turns it off. Off is the default — no lyrics network traffic happens until you enable it.
+
+Time-synced (LRC) lyrics highlight the current line as the track plays; the position is interpolated between playback polls, so the highlight moves smoothly on every backend — Spotify Connect and local mpv alike. The compact panel only appears for synced lyrics; tracks with plain (unsynced) lyrics show the full text in the full-screen view. Results are cached per track: definitive misses aren't re-fetched, while network errors retry on the next look-up.
 
 ## Session history
 

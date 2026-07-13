@@ -25,10 +25,20 @@ export const theme = {
 // header so the "thinking" motif stays consistent across the UI.
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
-// LLM-reasoning spinner (thinking/clarifying phases + transcript header).
-// Every frame MUST be a single-cell BMP glyph — a wide frame would shift the
-// status row as the animation advances.
-export const THINKING_SPINNER = ["♪", "♫", "♬", "♩"] as const;
+// Rotating labels for the thinking/clarifying phases, advanced every 3s of
+// elapsed generation time (see thinkingVerb in StatusBar). Each entry MUST be
+// ≤ 14 printable chars and end with … so the right-cluster width jitter on
+// rotation stays small.
+export const THINKING_VERBS = [
+  "crate digging…",
+  "tuning…",
+  "riffing…",
+  "mixing…",
+  "cueing up…",
+  "sampling…",
+  "vibing…",
+  "reading notes…",
+] as const;
 
 // Единый рендер ━ баров: filled/rest раздельно, чтобы красить их разными
 // цветами (accent vs muted) — целиком accent-бар читается как 100% при любом

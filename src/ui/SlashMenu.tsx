@@ -1,27 +1,14 @@
 import { theme } from "./theme";
+// Names + descriptions live with the handlers in the dispatch table — the
+// menu can never drift from what actually executes.
+import { SLASH_COMMANDS } from "../app/commands";
 
 export interface SlashCommand {
   cmd: string;
   description: string;
 }
 
-export const SLASH_COMMANDS: SlashCommand[] = [
-  { cmd: "/model", description: "switch AI provider / model" },
-  { cmd: "/music", description: "switch music provider (Spotify / SoundCloud / YouTube Music)" },
-  { cmd: "/random", description: "let the model pick a genre and generate" },
-  { cmd: "/save", description: "save current track list as a playlist" },
-  { cmd: "/clear", description: "clear session (results + context + playback)" },
-  { cmd: "/login", description: "reconnect Spotify account" },
-  { cmd: "/clientid", description: "set your own Spotify app client ID" },
-  { cmd: "/effort", description: "set Claude reasoning effort" },
-  { cmd: "/systemprompt", description: "set custom system prompt for Claude" },
-  { cmd: "/like", description: "remember current track (optional comment)" },
-  { cmd: "/memory", description: "show saved taste memory" },
-  { cmd: "/lyrics", description: "toggle realtime lyrics view" },
-  { cmd: "/history", description: "browse past sessions & model reasoning" },
-  { cmd: "/forget", description: "clear taste memory" },
-  { cmd: "/quit", description: "exit music-agent" },
-];
+export { SLASH_COMMANDS };
 
 export function filterSlashCommands(input: string): SlashCommand[] {
   const q = input.trim().toLowerCase();
