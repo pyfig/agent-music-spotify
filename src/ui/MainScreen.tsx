@@ -16,7 +16,7 @@ import { ConnectPrompt } from "./ConnectPrompt";
 import { ClarifyPrompt } from "./ClarifyPrompt";
 import { ConfirmActions, type ConfirmAction } from "./ConfirmActions";
 import { StatusBar } from "./StatusBar";
-import { LyricsPanel } from "./LyricsPanel";
+import { LyricsPanel, type LyricsPanelState } from "./LyricsPanel";
 import { LyricsScreen } from "./LyricsScreen";
 import { HistoryScreen } from "./HistoryScreen";
 import { ModelPicker } from "./ModelPicker";
@@ -40,6 +40,7 @@ export interface MainScreenProps {
   fullscreenLyricsActive: boolean;
   lyricsFullScreen: boolean;
   showCompactLyrics: boolean;
+  lyricsPanelState: LyricsPanelState;
   lyricsResult: LyricsResult | null;
   lyricsCurrentLine: number;
   interpolatedPosMs: number;
@@ -302,9 +303,9 @@ export function MainScreen(p: MainScreenProps) {
           {/* Same bottom-anchoring while the full-screen lyrics box
               (rendered above this block) replaces the results/input. */}
           {p.fullscreenLyricsActive && <box style={{ flexGrow: 1 }} />}
-          {p.showCompactLyrics && p.lyricsResult && (
+          {p.showCompactLyrics && p.budget.lyricsPanelVisible && (
             <box style={{ height: LYRICS_PANEL_ROWS, flexShrink: 0, flexDirection: "column", alignItems: "center" }}>
-              <LyricsPanel lyrics={p.lyricsResult} currentLine={p.lyricsCurrentLine} />
+              <LyricsPanel state={p.lyricsPanelState} lyrics={p.lyricsResult} currentLine={p.lyricsCurrentLine} />
             </box>
           )}
           {p.nowPlaying && !p.busy ? (

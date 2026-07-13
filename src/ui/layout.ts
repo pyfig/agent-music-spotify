@@ -27,6 +27,9 @@ export interface LayoutBudget {
   slashMaxVisible: 1 | 2 | 3;
   /** Cap for the ResultsList container (includes its title row); ≥ 5. */
   resultsMaxHeight: number;
+  /** Whether the compact lyrics panel actually fits — false when its rows were
+   * reclaimed for the results floor (degradation drops the panel first). */
+  lyricsPanelVisible: boolean;
   /** Lyric lines the full-screen view may show (viewport minus chrome); ≥ 3. */
   lyricsScreenRows: number;
 }
@@ -130,6 +133,7 @@ export function layoutBudget(height: number, flags: LayoutFlags): LayoutBudget {
     logoFits,
     slashMaxVisible,
     resultsMaxHeight: Math.max(MIN_RESULTS_HEIGHT, baseResults - (lyricsFits ? lyricsConsumed : 0)),
+    lyricsPanelVisible: flags.lyricsPanel && lyricsFits,
     // Full-screen lyrics replace the main stack; only the status bar, the
     // now-playing footer and the box's own chrome stay around the window.
     lyricsScreenRows: Math.max(

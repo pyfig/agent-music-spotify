@@ -82,11 +82,17 @@ describe("layoutBudget", () => {
     const fits = layoutBudget(16, { ...NONE, nowPlaying: true, lyricsPanel: true });
     expect(fits.resultsMaxHeight).toBe(5);
     expect(fits.logoFits).toBe(true);
+    expect(fits.lyricsPanelVisible).toBe(true);
 
     // At height 14: consumed = 6. baseResults = 14 - 6 = 8. With lyrics: 8 - 5 = 3 < 5 → hide.
     const hidden = layoutBudget(14, { ...NONE, nowPlaying: true, lyricsPanel: true });
     expect(hidden.resultsMaxHeight).toBe(8);
     expect(hidden.logoFits).toBe(true); // logo still fits even though lyrics is hidden
+    expect(hidden.lyricsPanelVisible).toBe(false);
+  });
+
+  test("lyricsPanelVisible is false when the panel is not flagged", () => {
+    expect(layoutBudget(40, NONE).lyricsPanelVisible).toBe(false);
   });
 
   test("lyrics panel hidden cannot force results below floor", () => {

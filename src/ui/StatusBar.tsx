@@ -154,7 +154,9 @@ export function StatusBar({
             <text fg={theme.subtext}>
               {" "}
               {backendLabel}
-              {loading ? " · generating…" : ""}
+              {/* Pre-progress window (agent started, no phase event yet):
+                  name the activity — a bare "generating…" says nothing. */}
+              {loading ? " · generating playlist…" : ""}
             </text>
             {!!excludedCount && !loading && !error ? (
               <text fg={theme.maroon} style={{ flexShrink: 0 }}>
