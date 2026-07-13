@@ -1,16 +1,18 @@
 {
   "name": "music-agent",
+  "version": "0.1.0",
   "module": "src/index.tsx",
   "bin": {
     "music-agent": "src/index.tsx"
   },
   "type": "module",
-  "private": true,
   "scripts": {
     "dev": "bun run src/index.tsx",
-    "test": "bun test"
+    "test": "bun test",
+    "release": "changeset publish"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@happy-dom/global-registrator": "^20.10.6",
     "@testing-library/react": "^16.3.2",
     "@types/bun": "latest",
