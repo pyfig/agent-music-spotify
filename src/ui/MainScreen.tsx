@@ -295,14 +295,8 @@ export function MainScreen(p: MainScreenProps) {
                 />
               )}
               {inputCluster}
-              {/* Absorbs leftover height so the player + status bar stay
-                  bottom-anchored now that ResultsList sizes to content. */}
-              <box style={{ flexGrow: 1 }} />
             </>
           )}
-          {/* Same bottom-anchoring while the full-screen lyrics box
-              (rendered above this block) replaces the results/input. */}
-          {p.fullscreenLyricsActive && <box style={{ flexGrow: 1 }} />}
           {p.showCompactLyrics && p.budget.lyricsPanelVisible && (
             <box style={{ height: LYRICS_PANEL_ROWS, flexShrink: 0, flexDirection: "column", alignItems: "center" }}>
               <LyricsPanel state={p.lyricsPanelState} lyrics={p.lyricsResult} currentLine={p.lyricsCurrentLine} />
